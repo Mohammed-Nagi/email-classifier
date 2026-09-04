@@ -28,23 +28,59 @@ maintainability, overall engineering approach.
 
 ## 2. The finding that shapes everything
 
-**A TF-IDF + Logistic Regression baseline achieves a perfect cross-validated score on the
-44 labelled emails.** Measured with 5-fold stratified CV: accuracy 1.000, macro-F1 1.000.
-Under repeated stratified CV (5-fold × 10 repeats): macro-F1 **0.986 ± 0.038**. A
-most-frequent-class dummy scores 0.091.
+*(§2 and §4 were rewritten in the step-5/6 session against `src/evaluate.py`'s actual
+repeated-CV harness. The original figures below came from a throwaway probe and did not
+reproduce — see the session's Claude Code transcript for the full diagnostic. Every number
+in this section is now re-derivable by running `python -m src.evaluate`.)*
 
-This is not near-duplicate leakage — mean nearest-neighbour cosine similarity within train is
-only 0.245 (re-derived in code; see the near-duplicate check row in §3). The task is simply
-keyword-separable: the category words appear near-verbatim in the text ("applying for a
+**Four of the five categories are saturated; the fifth is not, and averaging them together
+produces a headline number that describes neither.** Measured with 5-fold × 10-repeat
+stratified CV on the actual `TfidfLRModel` + `features.full_text` pipeline (`src/evaluate.py`):
+
+| | macro-F1 |
+|---|---|
+| Insurance Claims | 1.000 ± 0.000 (min 1.000) |
+| Investment Advisory | 0.988 ± 0.048 (min 0.800) |
+| Account Management | 0.976 ± 0.056 (min 0.800) |
+| Loan Processing | 0.956 ± 0.112 (min 0.667) |
+| **Other** | **0.727 ± 0.424 (min 0.000)** |
+| **All 5, flat softmax (headline)** | **0.929 ± 0.108 (min 0.731, max 1.000)** |
+| All 4 real categories, `Other` excluded | 0.980 ± 0.031 (min 0.914) |
+
+`Other` is a residual class (HR replies, IT notices, marketing — no topic coherence, see
+below) with only 6 training examples. Folded into one 5-way softmax, its instability drags
+the headline macro-F1 down and its variance up; on its own it accounts for essentially all
+of the spread — some folds get **zero** F1 on `Other` entirely. Exclude it and the four
+substantive categories are genuinely near-saturated at 0.980 ± 0.031, closely matching what
+the original probe reported as the headline number. The four real categories *are*
+keyword-separable — mean nearest-neighbour cosine similarity within train is only 0.245
+(re-derived in code; see §3), so this is not near-duplicate leakage, just short,
+template-generated text where the category words appear near-verbatim ("applying for a
 personal loan of $25,000", "Dear Loan Officer").
+
+**A single CV run would not have shown this.** Across 50 independent single (non-repeated)
+stratified 5-fold splits, **0 of 50** scored a perfect macro-F1 — every one of them landed a
+few `Other` examples awkwardly and dipped. A report of "5-fold CV: macro-F1 1.000" from this
+exact pipeline is not a lucky outlier away from being reproducible; it does not reproduce at
+all in 50 tries. That is the strongest evidence in this submission for the methodology
+argument below: a single CV run, run once and reported, is not a safe way to evaluate a
+5-way classifier at n=44 with a 6-example residual class in it — repeats are not a nicety,
+they are what makes the instability visible at all.
 
 ### What follows from this
 
-**Accuracy is saturated, so accuracy cannot be the deliverable.** There is no headroom for a
-heavier model to compete for — a zero-shot cross-encoder cannot beat 1.000, and any
-comparison between models will be decided by noise, not signal. An earlier draft of this
+**Accuracy on the flat 5-way task is not a stable number, and the instability has a name:
+`Other`.** There is no headroom for a heavier model to compete for on the four saturated
+categories — a zero-shot cross-encoder cannot beat 0.98, and any comparison between models
+on `full_text` will be decided by `Other`-driven noise, not signal. An earlier draft of this
 plan proposed a three-arm model bake-off as the technical centrepiece; the measurements
 above make that centrepiece hollow.
+
+**This is also the argument for §6's `Other` strategy, not a separate observation.** The
+exact class destabilising the headline CV score is the one class where the label
+`Other` semantically means "none of the four departments" rather than a topic to be learned
+from 6 examples. Abstain-as-`Other` (§6, strategy 2) is not just "semantically honest" — it
+is the direct fix for the specific instability measured here.
 
 **The submission's value must come from everything that happens after accuracy saturates:**
 
@@ -110,33 +146,62 @@ compliance framing is testing.
 
 ## 4. Ablation / stress testing — the technical centrepiece
 
-Since the provided evaluation is saturated, **build a harder one.** Progressively strip the
-structural artifacts and measure degradation. Probe results to reproduce and extend
-(5-fold × 10 repeats, macro-F1):
+Since the provided evaluation cannot separate a good model from a lucky split (§2), **build
+a harder one.** Progressively strip the structural artifacts and measure degradation.
+Re-derived from `src/features.py` + `src/evaluate.py` (`python -m src.evaluate`), 5-fold ×
+10 repeats, macro-F1, on `TfidfLRModel`:
 
 | Input | macro-F1 |
 |---|---|
-| subject + full body | 0.986 ± 0.038 |
-| body only, inner `<title>` removed | 0.950 ± 0.080 |
-| core paragraphs only (no subject, title, greeting or signature) | **0.839 ± 0.129** |
-| subject only | 0.667 ± 0.087 |
+| subject + title + full body | 0.929 ± 0.108 (min 0.731, max 1.000) |
+| subject + body, inner `<title>` removed | 0.867 ± 0.118 |
+| greeting + core sentence only (no subject, title, or signature) | 0.863 ± 0.114 |
+| core sentence only (no subject, title, greeting, or signature) | **0.674 ± 0.118** |
+| subject only | 0.670 ± 0.096 |
 
-The headline: **strip the artifacts and macro-F1 falls from 0.99 to 0.84, with variance
-more than tripling.** That gap is the honest measure of the task, and 0.84 ± 0.13 is a very
-different claim from "100% accurate".
+The headline: **strip subject, title, greeting, and signature and macro-F1 falls from 0.93
+to 0.67 — a 0.26 drop**, larger than an earlier probe of this idea estimated. (That probe's
+"core paragraphs only" figure of 0.839 turns out to have kept the greeting despite its own
+label — see `greeting_and_core` above, which isolates exactly that: greeting-inclusion
+alone explains nearly all of the gap between 0.839 and the true core-only figure of 0.674.)
 
-Extend with perturbations that mimic real inbox conditions:
+**A genuine feature-interaction finding fell out of building that intermediate rung.** The
+greeting is the giveaway PLAN.md §3 already flags ("Dear Loan Officer" names the
+department outright), but how much it matters depends on what else is present:
 
-- Remove or corrupt the subject line (forwarded/replied mail often loses it).
-- Replace department-naming salutations with generic ones ("Dear Sir/Madam") — tests whether
-  the model learned the topic or learned the greeting.
-- Paraphrase / synonym substitution on key terms.
-- Truncate to the first sentence (mobile previews, partial ingestion).
-- Add signature blocks, disclaimers, quoted reply chains as distractor text.
+- With title/subject still in the text, **swapping the greeting for a generic one costs
+  almost nothing** — `generic_salutation` below scores 0.920 ± 0.109 against `full_text`'s
+  0.929 ± 0.108, a 0.009 difference.
+- With title/subject already stripped, **removing the greeting outright costs 0.19** —
+  `greeting_and_core` (0.863) vs. `core_only` (0.674).
 
-Report a degradation table. This is the most defensible artefact in the submission: it
-shows you understood that the provided evaluation could not distinguish a good solution
-from a lucky one, and built one that could.
+The department-naming greeting is redundant leakage while richer artifacts are present, and
+becomes load-bearing leakage once they're gone. A single ablation number would have missed
+this; the intermediate rung is why it didn't.
+
+**The perturbations below tell a different, and more useful, story than "the model is
+fragile."** It is not fragile to noise — it is dependent on scaffolding:
+
+| Perturbation | macro-F1 | Δ vs. full_text |
+|---|---|---|
+| `no_subject` (drop subject, keep title+body) | 0.948 ± 0.092 | +0.019 |
+| `distractor_text` (append quoted-reply + disclaimer boilerplate) | 0.934 ± 0.104 | +0.005 |
+| `synonym_substitution` (swap department keywords for synonyms) | 0.927 ± 0.107 | −0.002 |
+| `generic_salutation` (replace greeting with "Dear Sir/Madam,") | 0.920 ± 0.109 | −0.009 |
+| `truncated_first_sentence` (subject + greeting + first sentence only) | 0.907 ± 0.113 | −0.022 |
+| `typo_noise` (~15% of words character-transposed) | 0.902 ± 0.118 | −0.027 |
+
+Every perturbation that *adds* noise, corrupts individual words, or swaps individual
+phrases costs under 0.03 macro-F1 — within fold-to-fold variance, i.e. indistinguishable
+from no perturbation at all. Only *removing structural content* (title, greeting/signature,
+subject) causes real degradation (§4 ablation table, 0.26 drop). **The model is robust to
+messy input and dependent on structural scaffolding** — a different, more specific claim
+than "fragile to real-world conditions," and the one the data actually supports.
+
+This ablation table, the greeting-interaction finding, and the 0/50-seeds reproducibility
+result (§2) are the most defensible artefacts in the submission: together they show the
+provided evaluation could not distinguish a good solution from a lucky one, and this one
+can, with a named mechanism for why.
 
 ---
 
@@ -373,10 +438,13 @@ README — the parts that actually differentiate.
 ## 11. What "good" looks like on submission day
 
 - One command, clean environment, produces `predictions.csv`.
-- A README whose opening section reframes the problem: accuracy is saturated, here is what
-  I did instead — and a reviewer who reads only that section already knows the submission is
+- A README whose opening section reframes the problem: the four real categories are
+  saturated, the fifth (`Other`) is what actually destabilises the headline CV score, a
+  single CV run can't be trusted to show that (0/50 seeds reproduce a perfect one) — here is
+  what I did instead. A reviewer who reads only that section already knows the submission is
   a cut above.
-- An ablation table showing 0.99 → 0.84 when artifacts are stripped.
+- An ablation table showing 0.93 → 0.67 when structural artifacts are stripped, and the
+  0/50-seeds reproducibility result showing why a single CV run at n=44 can't be trusted.
 - A confidence table showing the abstain mechanism firing on the genuinely ambiguous emails.
 - The fraud-report taxonomy gap raised as a business finding.
 - Per-prediction explanations that make the routing auditable.

@@ -106,6 +106,21 @@ def core_only(df: pd.DataFrame) -> pd.Series:
     return df["body_paragraphs"].apply(_join_middle)
 
 
+def greeting_and_core(df: pd.DataFrame) -> pd.Series:
+    """Greeting + core paragraph — no subject, title, or signature.
+
+    Sits between ``no_title`` and ``core_only`` in the ablation ladder to
+    isolate the greeting's own contribution. Added after re-deriving PLAN.md
+    §4's numbers turned up a real feature-interaction effect: dropping the
+    department-naming greeting (§3) costs ~0.19 macro-F1 once title/subject
+    are already gone (this variant vs. ``core_only``), but replacing it with
+    a generic one costs almost nothing while title/subject are still present
+    (``generic_salutation`` vs. ``full_text``). The greeting only matters
+    once nothing else is left to leak the label.
+    """
+    return df["body_paragraphs"].apply(lambda ps: " ".join(ps[:2]))
+
+
 def subject_only(df: pd.DataFrame) -> pd.Series:
     """Subject line alone."""
     return df["subject"]
@@ -201,9 +216,12 @@ def typo_noise(df: pd.DataFrame, seed: int = 42) -> pd.Series:
 
 
 # Ablation variants (PLAN.md §4): progressive artifact stripping.
+# greeting_and_core sits between no_title and core_only — see its docstring
+# for why that intermediate rung was worth adding.
 ABLATION_VARIANTS: dict[str, TextVariantBuilder] = {
     "full_text": full_text,
     "no_title": no_title,
+    "greeting_and_core": greeting_and_core,
     "core_only": core_only,
     "subject_only": subject_only,
 }

@@ -14,6 +14,7 @@ from src.features import (
     distractor_text,
     full_text,
     generic_salutation,
+    greeting_and_core,
     no_subject,
     no_title,
     subject_only,
@@ -74,6 +75,16 @@ def test_core_only_excludes_subject_title_greeting_and_signature(labelled_df: pd
     assert row["subject"] not in result
     assert row["inner_title"] not in result
     assert row["body_paragraphs"][0] not in result
+    assert row["body_paragraphs"][2] not in result
+
+
+def test_greeting_and_core_excludes_subject_title_and_signature(labelled_df: pd.DataFrame) -> None:
+    row = labelled_df.iloc[0]
+    result = greeting_and_core(labelled_df).iloc[0]
+
+    assert result == f"{row['body_paragraphs'][0]} {row['body_paragraphs'][1]}"
+    assert row["subject"] not in result
+    assert row["inner_title"] not in result
     assert row["body_paragraphs"][2] not in result
 
 

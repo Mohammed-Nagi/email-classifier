@@ -151,23 +151,49 @@ variant might have inline tags inside a `<p>`). Regression test:
   PLAN.md next, since "body only" is ambiguous between several plausible definitions.
 - **The 0.26 near-duplicate figure was off** (now corrected in PLAN.md itself to 0.245,
   with a note). This is a useful reminder that every number in PLAN.md came from the same
-  throwaway probe and needs the same re-derivation treatment — I'd trust none of the
-  remaining §2/§4/§6 numbers until re-measured against this actual codebase.
-- **§6's confidence/margin table is almost certainly stale** for the same reason (see
-  email_4 above) — flagging clearly so a future session doesn't copy it into the README
-  without regenerating it from `evaluate.py`.
-- **PLAN.md's repo sketch shows `models/base.py` from the start; I deliberately didn't
-  build it in step 1–4** (see Decisions above). Step 5 should either build it when the
-  embeddings arm lands, or make an explicit call that the abstraction isn't worth it for
-  two arms — don't default into it without deciding.
+  throwaway probe and needs the same re-derivation treatment — confirmed right again this
+  session: §2/§4's headline numbers were also off, materially (see the step 5/6 section
+  above). §6's confidence/margin table is the one remaining unverified figure; it needs
+  regenerating from `evaluate.py`/calibration in step 9, same treatment.
+- ~~PLAN.md's repo sketch shows `models/base.py` from the start; I deliberately didn't
+  build it in step 1–4~~ — built this session (`src/models/base.py`, `ClassifierModel`).
+  The trigger wasn't a second arm existing yet (it doesn't — embeddings is still step 7)
+  but the CV harness needing a `model_factory: () -> ClassifierModel` contract to build a
+  fresh unfitted model per fold; that contract is exactly the fit/predict_proba interface
+  PLAN.md wanted, so it made sense to build now rather than duplicate it later.
+
+## Step 5/6 session: PLAN.md §2/§4 numbers re-derived, materially different
+
+The single biggest open item from the previous handoff — "no CV/holdout evaluation exists
+for this exact pipeline" — is resolved. Running `python -m src.evaluate` (5-fold × 10
+repeats, `TfidfLRModel` + `features.full_text`) does **not** reproduce PLAN.md's original
+§2/§4 numbers: `full_text` scores 0.929 ± 0.108 (min 0.731), not 0.986 ± 0.038, and 0/50
+independent single 5-fold splits score a perfect macro-F1.
+
+Diagnosed, not just measured: the instability is almost entirely the `Other` class (F1
+0.727 ± 0.424, min 0.000 across the same 50 folds) — the four real categories score
+0.980 ± 0.031 excluding it, matching the original probe closely. PLAN.md §2 and §4 have
+been rewritten in place with the corrected numbers and this diagnosis; do not use the old
+figures (0.986/0.839/0.950) anywhere downstream (README included) — they do not reproduce
+from this codebase and the session transcript has the full diagnostic if the "why" is
+needed again.
+
+One specific number was also traced to a probable definitional difference rather than a
+bug: the original "core paragraphs only" figure (0.839) is close to this session's
+`greeting_and_core` variant (0.863) — which keeps the greeting — and far from the literal
+"no greeting" reading (`core_only`, 0.674). Most likely the original probe's "core
+paragraphs only" kept the greeting despite its own written definition excluding it. Verified
+this isn't an ingest/assembly bug on this session's side: `core_only`'s output was eyeballed
+against the raw HTML for 3 emails across categories and matches exactly (see `src/features.py`
+`_join_middle`/`core_only`), and `subject_only` reproduces the original probe's number almost
+exactly (0.670 vs 0.667), which also rules out the CV protocol/estimator as the cause.
 
 ## Known gaps — do not mistake for finished work
 
-- **No CV/holdout evaluation exists for this exact pipeline.** `src/run.py` fits on all 44
-  labelled rows with zero held-out validation. There is currently no measured accuracy or
-  macro-F1 anywhere in this codebase for `src/model.py`'s actual configuration — the §2
-  headline numbers in PLAN.md are from the old throwaway probe, not from this code, and
-  have not been re-verified against it. This is the most important open item for step 5.
+- ~~No CV/holdout evaluation exists for this exact pipeline~~ — resolved this session:
+  `src/evaluate.py` has the repeated stratified CV harness, and `src/run.py` still fits on
+  all 44 labelled rows for the actual `predictions.csv` output (correct — CV is for
+  evaluation, not for shrinking the training set of the shipped model).
 - `config.yaml`'s model hyperparameters (`max_features`, `ngram_range`, `C`,
   `class_weight`) are untuned, unvalidated defaults — documented as "sane defaults" in a
   comment, nothing more.
