@@ -1,0 +1,13 @@
+email_id,predicted_category,confidence_score,source_filename
+35,Investment Advisory,0.2688705500244705,email_1.html
+44,Investment Advisory,0.32312145438566947,email_2.html
+7,Investment Advisory,0.34257774006760444,email_3.html
+53,Account Management,0.3900506210453878,email_4.html
+9,Insurance Claims,0.4867103274103601,email_5.html
+15,Other,0.2613252546010817,email_6.html
+16,Account Management,0.3180126128264058,email_7.html
+18,Loan Processing,0.39366844190191236,email_8.html
+48,Investment Advisory,0.310361711209382,email_9.html
+2,Investment Advisory,0.4001583365713596,email_10.html
+8,Loan Processing,0.4627466985298368,email_11.html
+41,Account Management,0.36620119800998946,email_12.html

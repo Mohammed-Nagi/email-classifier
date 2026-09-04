@@ -16,3 +16,20 @@ categories:
   - Loan Processing
   - Insurance Claims
   - Other
+
+model:
+  # TF-IDF: min_df=1 because the corpus is only 44 documents — any higher
+  # would drop discriminative words that happen to appear once. ngram_range
+  # (1, 2) captures short department-naming phrases ("loan officer").
+  tfidf:
+    max_features: 5000
+    ngram_range: [1, 2]
+    stop_words: english
+    min_df: 1
+  # Logistic Regression: class_weight=balanced because train has mild
+  # imbalance (13 vs 6 across the 5 classes). Not yet tuned against a CV
+  # harness (that lands with evaluate.py) — these are sane defaults.
+  logistic_regression:
+    C: 1.0
+    max_iter: 1000
+    class_weight: balanced
