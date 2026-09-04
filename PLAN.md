@@ -33,9 +33,10 @@ maintainability, overall engineering approach.
 Under repeated stratified CV (5-fold × 10 repeats): macro-F1 **0.986 ± 0.038**. A
 most-frequent-class dummy scores 0.091.
 
-This is not near-duplicate leakage — mean nearest-neighbour cosine similarity within train
-is only 0.26. The task is simply keyword-separable: the category words appear near-verbatim
-in the text ("applying for a personal loan of $25,000", "Dear Loan Officer").
+This is not near-duplicate leakage — mean nearest-neighbour cosine similarity within train is
+only 0.245 (re-derived in code; see the near-duplicate check row in §3). The task is simply
+keyword-separable: the category words appear near-verbatim in the text ("applying for a
+personal loan of $25,000", "Dear Loan Officer").
 
 ### What follows from this
 
@@ -77,6 +78,7 @@ no README claim should rest on a figure neither you nor the tests re-confirmed.*
 | Sender field | Noisy: HR-topic mail from `security@redrock.com`; IT notice from a `gmail.com` address | Trap feature. Measure, then exclude, with evidence. |
 | **Inner `<title>`** | Each body opens with a topic restatement ("Account Transfer", "Pet Insurance") | Generation artifact. Inflates scores — see ablation below. |
 | **Salutations name the department** | "Dear Loan Officer", "Dear Pet Insurance Claims", "Dear Account Services" | The label is partly *written into* the greeting. Real clients do not reliably do this. |
+| Near-duplicate check | Mean nearest-neighbour cosine similarity within train: **0.245** (re-derived in `scripts/recon.py`; corrected from an earlier throwaway-probe figure of 0.26, likely a differently-fitted `TfidfVectorizer` — see `NOTES.md`) | Rules out near-duplicate leakage as the explanation for the saturated CV score in §2; the task is keyword-separable, not duplicated. |
 
 ### Decision: which `email_id` goes in the output CSV — SETTLED
 
