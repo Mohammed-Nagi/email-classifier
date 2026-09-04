@@ -17,8 +17,9 @@ from typing import Any
 import pandas as pd
 
 from src.config import load_config
+from src.features import full_text
 from src.ingest import attach_labels, ingest_directory, load_train_labels, records_to_dataframe
-from src.model import build_pipeline, build_text_input, predict_with_confidence
+from src.models.tfidf_lr import TfidfLRModel
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -43,12 +44,10 @@ def build_predictions(config: dict[str, Any]) -> pd.DataFrame:
     labels_df = load_train_labels(labels_csv)
     labelled_df = attach_labels(train_df, labels_df)
 
-    pipeline = build_pipeline(config)
-    pipeline.fit(build_text_input(labelled_df), labelled_df["true_category"])
+    model = TfidfLRModel(config)
+    model.fit(full_text(labelled_df), labelled_df["true_category"])
 
-    predicted_category, confidence_score = predict_with_confidence(
-        pipeline, build_text_input(test_df)
-    )
+    predicted_category, confidence_score = model.predict_with_confidence(full_text(test_df))
 
     predictions = pd.DataFrame(
         {
