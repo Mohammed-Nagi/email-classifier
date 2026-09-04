@@ -300,12 +300,13 @@ distinction for a financial client.
 
 ## 6. Confidence, `Other`, and routing
 
-**STALE — every figure below is from the same throwaway probe as §2/§4's original numbers,
-which were both found materially wrong when re-derived in code (§2, §4). This table has not
-been re-run.** Confirmed stale on one data point: `email_4` measures confidence **0.39** in
-this codebase's current (uncalibrated) baseline, not the 0.64 cited below. Do not carry this
-table into the README until it's regenerated from `evaluate.py` and calibrated probabilities
-(step 9) — it is the last unverified block in this plan.
+**STILL STALE — the table below has not been regenerated.** Calibration (step 9) is now
+done — see "Confidence score" below for the measured before/after — but the table needs
+**margin** (step 10) alongside calibrated confidence to be worth regenerating once, not
+twice. Confirmed stale on one data point in the meantime: `email_4` (test id 53) now
+measures calibrated confidence **0.68**, not the raw-model 0.39 this file previously
+confirmed, and not the 0.64 originally cited below (which predates both fixes). Do not carry
+this table into the README until step 10 regenerates it with both columns.
 
 The observed confidence behaviour on the 12 test emails, once regenerated, should validate
 the design — the lowest-confidence predictions ought to be exactly the genuinely ambiguous
@@ -324,14 +325,38 @@ right cases is far stronger than asserting that it should.
 ### Confidence score
 
 1. Take the predicted-class probability.
-2. **Calibrate it** — raw LR probabilities on 44 samples are overconfident. Use
-   cross-validated Platt/sigmoid calibration and show reliability curve + Brier/ECE before
-   and after. **Caveat honestly:** calibrating on 44 points with 6 in the smallest class is
-   itself statistically thin. State that the calibration is indicative, not authoritative,
-   and that with production volume it would be re-fit properly. Saying this is worth more
-   than pretending otherwise.
+2. **Calibrate it.** This section originally assumed raw LR probabilities on 44 samples
+   would be *overconfident* — measured, that assumption was backwards: the raw model is
+   **badly underconfident**. Pooled out-of-fold across the repeated CV harness (5-fold ×
+   10 repeats, `python -m src.calibrate`), mean confidence is 0.35 against 96% actual
+   accuracy — every raw confidence sits in a narrow 0.26–0.49 band regardless of how
+   easy the email actually was (NOTES.md), which is exactly why a routing threshold
+   against raw confidence would have been close to meaningless. Cross-validated sigmoid
+   (Platt) calibration (`CalibratedTfidfLRModel`, `src/calibrate.py`) fixes this
+   substantially:
+
+   | | Brier (0–2, lower better) | ECE (0–1, lower better) | mean confidence | pooled accuracy |
+   |---|---|---|---|---|
+   | Raw | 0.544 | 0.613 | 0.35 | 0.96 |
+   | Calibrated | 0.215 | 0.359 | 0.62 | 0.97 |
+
+   **Paired check (same fold, same test examples, both models, per iteration — not a
+   comparison of two means):** macro-F1 delta (calibrated − raw) is +0.022 ± 0.063 across
+   50 folds — inside fold-to-fold noise, so calibration does not reliably help or hurt
+   classification accuracy either way. Only 11 of 440 pooled predictions (2.5%) flip
+   label at all, and **0 of the 12 actual test emails** flip category. Calibration is
+   doing what it should: rescaling confidence to match reality without materially
+   changing what gets predicted. **`run.py` now ships the calibrated model** on this
+   evidence (see NOTES.md for the full reasoning).
+
+   **Caveat honestly, as originally planned:** ECE improves a lot (0.613 → 0.359) but
+   doesn't reach zero — calibrating on 44 points with 6 in the smallest class is
+   statistically thin, exactly as anticipated, and this is the measured confirmation of
+   that caveat rather than a hedge added after the fact. With production volume this
+   would be re-fit properly.
 3. Report **margin** (top-1 − top-2) as an extra column — for routing, "which two
    departments is it torn between" is more actionable than absolute confidence.
+   **Not yet built — step 10.**
 
 ### `Other` strategy — implement and compare at least two
 
@@ -422,26 +447,30 @@ email-classifier/
 │   ├── features.py              # text assembly variants (full / stripped / core) for ablation
 │   ├── models/
 │   │   ├── base.py              # shared fit/predict_proba interface — arms are swappable
-│   │   ├── tfidf_lr.py          # shipped baseline arm
-│   │   └── embed_lr.py          # [step 7, not yet built]
+│   │   └── tfidf_lr.py          # shipped baseline arm (embeddings arm investigated, deferred — §5)
 │   ├── evaluate.py              # CV, ablation harness, per-class/reproducibility diagnostics
-│   ├── calibrate.py             # [step 9, not yet built]
+│   ├── calibrate.py             # sigmoid calibration, Brier/ECE, paired raw-vs-calibrated check
 │   ├── routing.py               # threshold, abstain, Other strategy [step 10, not yet built]
 │   ├── explain.py               # per-prediction token attribution [step 10, not yet built]
-│   ├── plots.py                 # calibration, coverage-accuracy, confusion matrix [step 9, not yet built]
-│   └── run.py                   # single-command entrypoint
+│   ├── plots.py                 # calibration, coverage-accuracy, confusion matrix [step 9/11: figure
+│   │                             #   rendering deferred to evaluation_report.md assembly; the data
+│   │                             #   (reliability curve, per-class F1) is already CSV output]
+│   └── run.py                   # single-command entrypoint — ships CalibratedTfidfLRModel
 ├── tests/
 │   ├── test_ingest.py           # nested unwrap, id mismatch, missing fields
 │   ├── test_features.py         # variant-builder semantics
 │   ├── test_models.py           # ClassifierModel interface + TfidfLRModel
 │   ├── test_evaluate.py         # CV harness, per-class breakdown, reproducibility check
+│   ├── test_calibrate.py        # calibrated model, Brier/ECE correctness, paired comparison
 │   ├── test_run.py              # end-to-end output contract
 │   └── test_routing.py          # threshold boundaries [step 10, not yet built]
 └── outputs/
-    ├── predictions.csv          # THE required deliverable
+    ├── predictions.csv          # THE required deliverable — calibrated confidence
     ├── ablation_results.csv     # §4 degradation table, generated by `python -m src.evaluate`
+    ├── ablation_per_class.csv   # per-class F1 across the ablation ladder (§2/§4 decontamination)
+    ├── calibration_reliability.csv  # reliability-curve bins, raw vs. calibrated (§6)
     ├── evaluation_report.md     # [step 11, not yet built]: metrics, ablation table, embedded figures
-    └── figures/                 # [step 9, not yet built]
+    └── figures/                 # [step 11, not yet built]
 ```
 
 `models/base.py` is the key architectural choice: one `fit`/`predict_proba` contract means
@@ -476,10 +505,16 @@ normal run and embedded in `evaluation_report.md`.
    given the time budget; see §5 and NOTES.md for the full reasoning.
 8. `Other` strategies; compare. **Deferred with step 7**, same time-budget reasoning —
    revisit only if time remains after step 9–12.
-9. **Calibration + `plots.py`. ← next.** Prerequisite for §6's routing/abstain policy to
-   mean anything (NOTES.md: current confidences are uncalibrated and don't yet separate
-   confident from uncertain predictions).
-10. `routing.py` + `explain.py`; wire `needs_review` and `top_features` into output.
+9. ~~Calibration.~~ **(done —** raw model measured badly *underconfident* (not overconfident,
+   correcting §6's original assumption); sigmoid calibration cuts pooled-CV Brier
+   0.544→0.215 and ECE 0.613→0.359 without changing any of the 12 actual test predictions
+   (2.5% flip rate on the full paired nested-CV check, macro-F1 delta within fold noise).
+   `run.py` now ships `CalibratedTfidfLRModel` on this evidence — see §6, NOTES.md.
+   `plots.py`'s actual figure-rendering deferred to step 11: the reliability-curve data is
+   already written to `outputs/calibration_reliability.csv`, so step 11 renders from data
+   already produced rather than choosing between "build plots.py now" and "duplicate the
+   computation later."
+10. **`routing.py` + `explain.py`; wire `needs_review` and `top_features` into output. ← next.**
 11. `evaluate.py` generates `evaluation_report.md`.
 12. **README** — the §2 framing up front, then setup, run, design decisions, both written
     answers, and an **"Investigated and rejected"** section (sender field, arms that lost,

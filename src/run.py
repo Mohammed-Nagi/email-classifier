@@ -3,10 +3,15 @@
     python -m src.run
 
 Trains TF-IDF + Logistic Regression on all 44 labelled training emails and
-predicts the 12 unlabelled test emails. Calibration, routing/abstain
-thresholds, and per-prediction explanations are later build steps (§6, §9
-steps 9-10 in PLAN.md); this version produces the required deliverable —
-predicted_category and confidence_score per email — end to end.
+predicts the 12 unlabelled test emails. Uses the sigmoid-calibrated model
+(``CalibratedTfidfLRModel``), not the raw pipeline — see PLAN.md §6 and
+NOTES.md for the measured before/after: calibration cuts pooled-CV Brier
+0.544 -> 0.215 and ECE 0.613 -> 0.359, changes 0 of the 12 actual test
+predictions (2.5% flip rate across the full nested-CV comparison, and that
+change is within fold-to-fold noise on macro-F1), and is what makes a
+routing threshold (§6, step 10) meaningful at all — raw confidences never
+left a 0.26-0.49 band. Routing/abstain thresholds and per-prediction
+explanations are still later build steps (§9 steps 10-11 in PLAN.md).
 """
 
 from __future__ import annotations
@@ -16,10 +21,10 @@ from typing import Any
 
 import pandas as pd
 
+from src.calibrate import CalibratedTfidfLRModel
 from src.config import load_config
 from src.features import full_text
 from src.ingest import attach_labels, ingest_directory, load_train_labels, records_to_dataframe
-from src.models.tfidf_lr import TfidfLRModel
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -44,7 +49,7 @@ def build_predictions(config: dict[str, Any]) -> pd.DataFrame:
     labels_df = load_train_labels(labels_csv)
     labelled_df = attach_labels(train_df, labels_df)
 
-    model = TfidfLRModel(config)
+    model = CalibratedTfidfLRModel(config)
     model.fit(full_text(labelled_df), labelled_df["true_category"])
 
     predicted_category, confidence_score = model.predict_with_confidence(full_text(test_df))

@@ -52,9 +52,10 @@ them rather than restating them, so the two documents don't drift apart.
   model-evaluation results that belong in `evaluate.py` — computing them twice in two
   different scripts would just create a second place for them to drift out of sync.
 
-- **Confidence score is raw, uncalibrated LR probability.** No calibration yet by design
-  (that's step 9). Don't read anything into the current values beyond "the model's own
-  softmax output."
+- **Confidence score is calibrated (sigmoid/Platt), as of step 9.** `run.py` ships
+  `CalibratedTfidfLRModel`, not the raw pipeline — see "Calibration (step 9)" below for the
+  measured before/after and why the raw model turned out to be underconfident, not
+  overconfident as PLAN.md §6 originally assumed.
 
 - **`sender` and `date_received` are captured but not fed to the model.** Only
   `features.full_text()` (subject + body_text) goes into TF-IDF. This was the correct
@@ -114,6 +115,67 @@ builders. Scope it to `full_text` (parity check) + `core_only` (the rung with th
 decontaminated headroom) — `subject_only` tells nearly the same story as `core_only`
 (0.837 vs 0.831) and the six perturbation variants test TF-IDF's specific token-exact-match
 weakness, not the scaffolding-dependence question an embeddings arm would answer.
+
+## Calibration (step 9): the underconfidence finding, and why run.py switched
+
+**The raw model isn't overconfident — it's badly underconfident, the opposite of what
+PLAN.md §6 originally assumed before this was measured.** Pooled out-of-fold across the
+repeated CV harness (5-fold × 10 repeats, `calibration_cv` in `src/calibrate.py`): raw mean
+confidence is **0.35** against **96%** actual pooled accuracy. Every raw confidence for the
+12 real test emails sits in a **0.26–0.49** band regardless of how easy the email actually
+was — this is *why* a routing threshold (step 10) against raw confidence would have been
+close to meaningless: there's no usable spread to threshold against. `Brier 0.544, ECE
+0.613` raw.
+
+Sigmoid (Platt) calibration (`CalibratedTfidfLRModel`) substantially fixes this: `Brier
+0.215, ECE 0.359`, mean confidence 0.62 against 97% pooled accuracy. On the actual 12 test
+emails, calibrated confidence spreads 0.43–0.79 (was 0.26–0.49) and **0 of the 12
+predicted categories change** — calibration rescaled the numbers without touching the
+decisions on the emails that matter. The paired check across the full 50-fold CV shows the
+same thing at the aggregate level: 11/440 pooled
+predictions (2.5%) flip label, and the macro-F1 delta (calibrated − raw) is +0.022 ± 0.063
+— inside fold-to-fold noise, i.e. no reliable accuracy change either way. ECE improves a
+lot but doesn't reach zero (0.359 remains) — expected and stated up front in PLAN.md §6:
+calibrating on 44 points with a 6-example class is thin, and this is the measured
+confirmation of that caveat, not a new problem.
+
+**Decision: `run.py` now ships `CalibratedTfidfLRModel`, not the raw pipeline**, made this
+session rather than deferred to step 10 as originally planned — because step 10's routing
+threshold is only as meaningful as the probability scale it operates on, and raw confidence
+had no usable spread to set a threshold against. The evidence above (0 flips on the real
+test set, macro-F1 change within noise, large Brier/ECE improvement) was the basis; see
+PLAN.md §6 for the full before/after table.
+
+**Why `cv=3`, not 5, inside `CalibratedClassifierCV`** (also documented as a docstring in
+`src/calibrate.py`, repeated here per instruction — this is the kind of parameter that looks
+arbitrary a session later without the reasoning attached): `CalibratedTfidfLRModel` is
+evaluated inside the same 5-fold *outer* CV harness the raw model is. That outer split
+already removes ~20% of the 44 examples into a held-out test fold, leaving as few as 4-5
+examples of the smallest classes (Other/Loan Processing, n=6 each) in the *training* fold
+that `CalibratedClassifierCV` then splits again internally for its own calibration-vs-fit
+separation. `cv=5` there needs 5 examples of every class in that inner split and fails
+outright on some outer folds ("n_splits=5 cannot be greater than the number of members in
+each class"). `cv=3` is the largest inner split that survives every outer fold this model is
+actually evaluated with — chosen empirically against the real fold structure, not a default.
+
+**Why Brier/ECE are computed on *pooled out-of-fold* predictions, not per-fold or in-sample**
+(also worth keeping, same reason): computing them on training-fit probabilities would be
+badly optimistic (the model has already seen those labels). Computing them per-fold would
+put ~9 held-out examples into ECE's 10 bins — too few for a bin to mean anything. Pooling
+every repeat's held-out predictions across the full repeated CV gives 44 examples × 10
+repeats = 440 points, which is what `calibration_cv` returns before deriving Brier/ECE from
+it. This mirrors `evaluate.py`'s existing repeated-CV pattern but keeps raw predictions
+instead of throwing them away the way `repeated_stratified_cv` does (see "CV harness
+gotchas" below).
+
+**The paired comparison (`paired_calibration_comparison`) is structurally paired, not just
+same-seed paired.** Unlike the embeddings-arm headroom check above (which relied on
+"same seed ⇒ same fold membership" across two separate `per_class_f1_cv` calls), this
+function fits both the raw and calibrated model inside the *same* loop iteration, from the
+*same* `splitter.split()` call — the pairing doesn't depend on trusting that two separate CV
+invocations happened to get identical folds, it's guaranteed by construction. Worth using
+this pattern again for any future "did X change predictions, not just a score" question,
+rather than reaching for two independent CV calls plus the same-seed argument.
 
 ## Exact text assembly (ingest.py → features.py)
 
@@ -177,13 +239,12 @@ variant might have inline tags inside a `<p>`). Regression test:
   Transfer Request" → inner title "Account Transfer"). This is a strong artifact/leakage
   signal sitting right at the start of the body text — see PLAN.md §4 for the measured drop
   once it's stripped.
-- **Baseline confidence scores are uniformly low.** All 12 test predictions from the
-  current (uncalibrated) model land in 0.26–0.49 — none above 0.5, even for emails that
-  look unambiguous. This is expected for raw multinomial softmax over 5 classes with 44
-  training rows and a diffuse TF-IDF feature space, but it means `confidence_score` as
-  currently computed does **not** yet meaningfully separate confident from uncertain
-  predictions. Calibration (step 9) is a real prerequisite for §6's routing/abstain policy
-  to mean anything, not just a nice-to-have.
+- **Baseline confidence scores were uniformly low — RESOLVED, step 9.** All 12 raw-model
+  test predictions landed in 0.26–0.49, none above 0.5, even for unambiguous emails. Flagged
+  here as expected-but-a-problem for routing; confirmed exactly right once measured
+  (mean confidence 0.35 vs. 96% actual accuracy — underconfidence, not the overconfidence
+  PLAN.md §6 assumed) and fixed by calibration. See "Calibration (step 9)" above for the
+  numbers; this entry is kept as the prediction that turned out correct, not a live gap.
 - **`test/email_4.html` (internal id 53), the fraud-report taxonomy gap, is confirmed** —
   no category fits a fraud report, exactly as PLAN.md §3 argues. Its current measured
   confidence is tracked in PLAN.md §6 (marked stale there pending recalibration) — not
