@@ -63,6 +63,58 @@ them rather than restating them, so the two documents don't drift apart.
   If a later session adds sender/date features, that needs the deliberate "measure, then
   exclude, with evidence" treatment PLAN.md calls for in §3, not a silent inclusion.
 
+## Investigated and deferred: the embeddings arm (step 7)
+
+**Decision: built the diagnostic PLAN.md §5 called for, then deferred the arm itself on
+time-budget grounds — not because the diagnostic came back negative.**
+
+The check: run `per_class_f1_cv` on `core_only` and `subject_only` (never done before this
+session — §2's diagnosis had only ever been run on `full_text`). Full numbers, all five
+ablation rungs, in `outputs/ablation_per_class.csv` (`run_ablation_per_class` +
+`macro_f1_excluding_class`, `src/evaluate.py`):
+
+| Variant | Other F1 (std, min) | Loan Processing F1 (std, min) | macro-F1 excl. Other |
+|---|---|---|---|
+| full_text | 0.727 (±0.424, min 0.000) | 0.956 (±0.112, min 0.667) | 0.980 |
+| no_title | 0.467 (±0.481, min 0.000) | 0.960 (±0.109, min 0.667) | 0.967 |
+| greeting_and_core | 0.440 (±0.477, min 0.000) | 1.000 (±0.000, min 1.000) | 0.969 |
+| core_only | 0.047 (±0.191, min 0.000) | 0.672 (±0.421, min 0.000) | 0.831 |
+| subject_only | 0.000 (±0.000, min 0.000) | 0.665 (±0.402, min 0.000) | 0.837 |
+
+**Result: the headroom premise holds, but not for the reason originally assumed.** `Other`
+doesn't just stay noisy under stripping, it collapses toward zero — worse than PLAN.md §5
+anticipated. And a second n=6 class, Loan Processing, newly destabilises at the two most-
+stripped rungs (min F1 0.000 at both), something §2's `full_text`-only diagnosis had no way
+to see. So a **flat 5-way macro-F1** comparison between arms on `core_only`/`subject_only`
+would have been an even worse coin-flip than on `full_text` — contaminated by two unstable
+n=6 classes instead of one. But the `Other`-excluded macro-F1 (last column above) still
+degrades genuinely and monotonically — 0.980 → 0.831 — independent of either small class.
+That's real, decontaminated headroom on the four saturated categories. See PLAN.md §2 for
+the two-mechanism read this produced (small-n fragility vs. semantic-incoherence fragility —
+`Other` has both, Loan Processing only the first) and §4 for the ablation-table fix this
+forced (report `Other`-excluded macro-F1 alongside flat, not flat alone).
+
+**Given that the premise held, the arm was still cut — deliberately, not as a fallback:**
+1. Confirmatory, not load-bearing: PLAN.md §5 already argues model choice is an engineering
+   decision once accuracy saturates; the arm would have strengthened, not changed, that.
+2. The brief's actual required confidence score is not yet meaningful (see below — 0.26–0.49,
+   no separation) and calibration → routing → explainability is the chain that fixes that.
+   That chain doesn't fit the remaining time budget alongside a new model arm.
+3. `sentence-transformers` pulls in `torch` — a real, one-sided dependency cost (~0.5–1.5GB
+   install, ~90MB model download on first run) that would have needed a second requirements
+   file and a guarded import to keep out of the required single-command path, adding exactly
+   the kind of conditional complexity the rest of this project avoids.
+
+If a future session revisits this: `src/models/embed_lr.py` doesn't exist yet, but the plan
+was to implement `ClassifierModel` with a module-level cached `SentenceTransformer` singleton
+(load weights once, not per fold — nothing about the encoder is *fit* to this data, so
+sharing it across folds isn't a leakage risk the way sharing a fitted `TfidfVectorizer`
+would be) and an `LogisticRegression` head, run through the same `FEATURE_VARIANTS`
+builders. Scope it to `full_text` (parity check) + `core_only` (the rung with the largest
+decontaminated headroom) — `subject_only` tells nearly the same story as `core_only`
+(0.837 vs 0.831) and the six perturbation variants test TF-IDF's specific token-exact-match
+weakness, not the scaffolding-dependence question an embeddings arm would answer.
+
 ## Exact text assembly (ingest.py → features.py)
 
 The contract every `features.py` variant is built on top of, unambiguously:
@@ -228,6 +280,13 @@ arrays (not just the means) is the fold-by-fold effect of that specific text cha
 - `_DummyModel` wraps `sklearn.dummy.DummyClassifier(strategy="most_frequent")` — it has no
   `config` dependency, so `count_perfect_single_fold_runs(_DummyModel, ...)` works directly
   (see `test_dummy_model_never_scores_a_perfect_single_fold_run`).
+- **`run_ablation_per_class` + `macro_f1_excluding_class`** (added this session) refit the
+  ablation ladder a second time via `per_class_f1_cv` — same folds (same seed), but this is
+  a second set of fits, not a reuse of `run_ablation`'s. If the ablation ladder ever grows
+  past 5 variants and `python -m src.evaluate`'s runtime becomes annoying, this is the first
+  place to look for caching, per the "no caching, no shared fits" gotcha above.
+  `outputs/ablation_per_class.csv` is long-format (one row per variant × category) — pivot
+  or `groupby` it rather than reading a wide table.
 
 ## Where PLAN.md is wrong, underspecified, or worth doing differently
 
@@ -246,11 +305,11 @@ arrays (not just the means) is the fold-by-fold effect of that specific text cha
   figures and full diagnosis (not restated here, to keep one home for those numbers). §6's
   confidence/margin table is the one remaining unverified block — PLAN.md §6 now carries
   its own STALE marker in place, with the confirmed `email_4` discrepancy.
-- **§5's "real headroom to separate arms" claim on stripped conditions is now flagged
-  directly in PLAN.md §5**, not buried here: whether that headroom is clean signal or more
-  `Other`-noise is untested. The check itself (`per_class_f1_cv` on `core_only`/
-  `subject_only`) is still outstanding — do it in step 7 before reporting the
-  embeddings-arm comparison.
+- **§5's "real headroom to separate arms" claim on stripped conditions has been checked and
+  confirmed** — see "Investigated and deferred: the embeddings arm" above. The headroom is
+  real once `Other` is excluded, but flat macro-F1 on `core_only`/`subject_only` is worse
+  contaminated than §5 originally worried (a second n=6 class, Loan Processing, collapses
+  too) — this reshaped §2's diagnosis and §4's ablation table, not just §5.
 
 ## Known gaps — do not mistake for finished work
 
@@ -265,7 +324,8 @@ arrays (not just the means) is the fold-by-fold effect of that specific text cha
   Other and the hybrid gate are not implemented or compared (step 8).
 - No routing/threshold/abstain logic, no `needs_review` column, no `--auto-route-threshold`.
 - No explainability / token attribution (`explain.py` doesn't exist).
-- No embeddings arm, no zero-shot NLI arm.
+- No embeddings arm (investigated and deliberately deferred, see above — not an oversight),
+  no zero-shot NLI arm (always optional, never started).
 - No README.
 - `lxml` is installed in `.venv` (from the parser investigation) but is **not** in
   `requirements.txt` and nothing shipped imports it — intentional, but don't be surprised

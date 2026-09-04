@@ -26,7 +26,7 @@ from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import RepeatedStratifiedKFold
 
 from src.config import load_config
-from src.features import FEATURE_VARIANTS
+from src.features import ABLATION_VARIANTS, FEATURE_VARIANTS
 from src.ingest import attach_labels, ingest_directory, load_train_labels, records_to_dataframe
 from src.models.base import ClassifierModel
 from src.models.tfidf_lr import TfidfLRModel
@@ -208,6 +208,48 @@ def per_class_f1_cv(
     return pd.DataFrame(rows).sort_values("f1_mean", ascending=False).reset_index(drop=True)
 
 
+def run_ablation_per_class(
+    config: dict[str, Any], labelled_df: pd.DataFrame, variants: dict[str, Any] | None = None
+) -> pd.DataFrame:
+    """Per-class F1 across the ablation ladder, long format (one row per
+    variant × category).
+
+    Flat macro-F1 on the ablation ladder is contaminated once stripping is
+    heavy: `Other` and, at the two most-stripped rungs, Loan Processing
+    (both n=6) collapse toward zero and drag the 5-class average down with
+    them, independent of whether the four saturated categories are actually
+    degrading (PLAN.md §4). This is what :func:`macro_f1_excluding_class`
+    is derived from to get the decontaminated figure.
+    """
+    variants = ABLATION_VARIANTS if variants is None else variants
+    labels = labelled_df["true_category"]
+    seed = config["seed"]
+
+    frames = []
+    for name, builder in variants.items():
+        texts = builder(labelled_df)
+        per_class = per_class_f1_cv(lambda: TfidfLRModel(config), texts, labels, seed=seed)
+        per_class.insert(0, "variant", name)
+        frames.append(per_class)
+    return pd.concat(frames, ignore_index=True)
+
+
+def macro_f1_excluding_class(per_class_df: pd.DataFrame, exclude: str = "Other") -> pd.DataFrame:
+    """Mean per-class F1 across categories other than ``exclude``, per variant.
+
+    The ablation metric with `Other`'s collapse removed — see PLAN.md §4 for
+    why flat macro-F1 is not a safe headline figure once stripping is heavy
+    enough to also destabilise Loan Processing (the other n=6 class).
+    """
+    included = per_class_df[per_class_df["category"] != exclude]
+    return (
+        included.groupby("variant")["f1_mean"]
+        .mean()
+        .rename("macro_f1_excl_other")
+        .reset_index()
+    )
+
+
 def count_perfect_single_fold_runs(
     model_factory: ModelFactory,
     texts: pd.Series,
@@ -284,6 +326,19 @@ def main() -> None:
     _print_table(ablation_df)
 
     print()
+    print(
+        "=" * 10,
+        "Ablation, Other excluded: is flat macro-F1 above contaminated? (PLAN.md §4)",
+        "=" * 10,
+    )
+    per_class_ablation = run_ablation_per_class(config, labelled_df, ABLATION_VARIANTS)
+    excl_other = macro_f1_excluding_class(per_class_ablation)
+    for variant in ABLATION_VARIANTS:
+        excl_val = excl_other.loc[excl_other["variant"] == variant, "macro_f1_excl_other"].item()
+        flat_val = ablation_df.loc[ablation_df["variant"] == variant, "macro_f1_mean"].item()
+        print(f"  {variant:<20} flat macro-F1 {flat_val:.3f}   excl. Other {excl_val:.3f}")
+
+    print()
     print("=" * 10, "Perturbations: simulated inbox noise (beyond PLAN.md §4)", "=" * 10)
     from src.features import PERTURBATION_VARIANTS
 
@@ -295,6 +350,9 @@ def main() -> None:
     full_results = pd.concat([ablation_df, perturbation_df], ignore_index=True)
     full_results.to_csv(output_dir / "ablation_results.csv", index=False)
     print(f"\nWrote {output_dir / 'ablation_results.csv'}")
+
+    per_class_ablation.to_csv(output_dir / "ablation_per_class.csv", index=False)
+    print(f"Wrote {output_dir / 'ablation_per_class.csv'}")
 
 
 if __name__ == "__main__":

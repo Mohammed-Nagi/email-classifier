@@ -12,11 +12,13 @@ from src.evaluate import (
     _DummyModel,
     count_perfect_single_fold_runs,
     load_labelled_data,
+    macro_f1_excluding_class,
     per_class_f1_cv,
     repeated_stratified_cv,
     run_ablation,
+    run_ablation_per_class,
 )
-from src.features import full_text
+from src.features import full_text, subject_only
 from src.models.tfidf_lr import TfidfLRModel
 
 
@@ -130,6 +132,36 @@ def test_dummy_model_never_scores_a_perfect_single_fold_run(
         _DummyModel, full_text(labelled_df), labelled_df["true_category"], n_seeds=5
     )
     assert perfect == 0
+
+
+def test_run_ablation_per_class_returns_one_row_per_variant_per_category(
+    config: dict, labelled_df: pd.DataFrame
+) -> None:
+    variants = {"full_text": full_text, "subject_only": subject_only}
+    result = run_ablation_per_class(config, labelled_df, variants)
+
+    assert set(result["variant"]) == set(variants)
+    assert set(result["category"]) == set(config["categories"])
+    assert len(result) == len(variants) * len(config["categories"])
+    assert ((result["f1_mean"] >= 0) & (result["f1_mean"] <= 1)).all()
+
+
+def test_macro_f1_excluding_class_drops_the_named_category() -> None:
+    per_class_df = pd.DataFrame(
+        {
+            "variant": ["v1", "v1", "v1", "v2", "v2", "v2"],
+            "category": ["A", "B", "Other", "A", "B", "Other"],
+            "f1_mean": [1.0, 0.5, 0.0, 0.8, 0.6, 0.0],
+        }
+    )
+
+    result = macro_f1_excluding_class(per_class_df, exclude="Other")
+
+    assert set(result["variant"]) == {"v1", "v2"}
+    v1 = result.loc[result["variant"] == "v1", "macro_f1_excl_other"].item()
+    v2 = result.loc[result["variant"] == "v2", "macro_f1_excl_other"].item()
+    assert v1 == pytest.approx(0.75)  # mean(1.0, 0.5), Other dropped
+    assert v2 == pytest.approx(0.7)  # mean(0.8, 0.6), Other dropped
 
 
 def test_cv_result_summary_reports_mean_and_spread() -> None:
