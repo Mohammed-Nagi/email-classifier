@@ -28,10 +28,11 @@ maintainability, overall engineering approach.
 
 ## 2. The finding that shapes everything
 
-*(§2 and §4 were rewritten in the step-5/6 session against `src/evaluate.py`'s actual
-repeated-CV harness. The original figures below came from a throwaway probe and did not
-reproduce — see the session's Claude Code transcript for the full diagnostic. Every number
-in this section is now re-derivable by running `python -m src.evaluate`.)*
+*(§2 and §4 were rewritten against `src/evaluate.py`'s actual repeated-CV harness. The
+original figures here came from a throwaway probe and did not reproduce — see NOTES.md for
+the full diagnostic (variant semantics, isolation methodology, verification steps). Every
+number in this section is re-derivable by running `python -m src.evaluate`; NOTES.md cites
+these numbers rather than restating them, to avoid the two files drifting apart.)*
 
 **Four of the five categories are saturated; the fifth is not, and averaging them together
 produces a headline number that describes neither.** Measured with 5-fold × 10-repeat
@@ -82,15 +83,20 @@ exact class destabilising the headline CV score is the one class where the label
 from 6 examples. Abstain-as-`Other` (§6, strategy 2) is not just "semantically honest" — it
 is the direct fix for the specific instability measured here.
 
-**The submission's value must come from everything that happens after accuracy saturates:**
+**The submission's value must come from everything that happens after the headline number is
+understood, not from the headline number itself:**
 
-1. Recognising the perfect score as a **red flag rather than a result**, and saying so.
-2. Building a **harder evaluation** than the one provided, since the provided one is
-   uninformative.
+1. Recognising that a single-run "perfect" CV score would not be a real result even if one
+   had been produced — it doesn't reproduce (0/50 seeds, above) — and diagnosing *why* the
+   flat 5-way score is unstable instead of stopping at "it's high."
+2. Building a **harder evaluation** than the one provided, since the provided one — a
+   single CV run, reported once — is **unstable, not merely uninformative**: it can land
+   anywhere from 0.73 to 1.00 depending on which fold `Other`'s six examples fall into.
 3. Justifying model choice on **engineering grounds** (determinism, auditability, latency,
-   zero-download) once accuracy has stopped discriminating.
+   zero-download) once the four real categories have stopped discriminating between arms.
 4. A **calibrated confidence and abstain policy** that demonstrably fires on the genuinely
-   ambiguous cases.
+   ambiguous cases — and, per the finding above, directly addresses `Other`'s instability
+   rather than being "semantically honest" alone.
 5. **Per-prediction explainability** — an audit trail, which is what a regulated deployment
    actually requires.
 
@@ -134,8 +140,9 @@ see §6.
 
 Test `email_4.html` ("Account Freeze Request") reads: *"Dear Security Department, I suspect
 fraudulent activity on my account. Please freeze my account immediately."* **None of the
-five categories fit a fraud report.** The baseline assigns Account Management at 0.64 with
-`Other` as runner-up. In a regulated setting a suspected-fraud notification is plausibly the
+five categories fit a fraud report.** The baseline assigns it to Account Management, not
+`Other` (current confidence figure: §6, marked stale pending regeneration). In a regulated
+setting a suspected-fraud notification is plausibly the
 highest-stakes item in the whole inbox, and the taxonomy has nowhere to put it.
 
 Raise this explicitly in the written analysis. Noticing that the label schema is
@@ -230,6 +237,15 @@ harness. Its purpose is not to win — it is to demonstrate that the ceiling is 
 the *data*, not of one model family, and to show the comparison was actually run. Report it
 on the stripped-artifact ablation too, where there is real headroom to separate them.
 
+**Check that premise before leaning on it.** §2 found that `Other` (not general
+unsaturation) accounts for nearly all of `full_text`'s fold-to-fold spread — but that was
+only checked on `full_text`. Nobody has run the per-class breakdown (`per_class_f1_cv`) on
+`core_only` or `subject_only` to confirm `Other` isn't *still* the dominant source of
+variance once title/subject/greeting are stripped. If it is, an arm comparison on
+`core_only` is partly being decided by `Other`-noise, not by which arm handles sparse text
+better, and "real headroom to separate them" needs that check before it can be trusted.
+Do this first in step 7, before reporting the embeddings-arm comparison.
+
 Optionally add **zero-shot NLI** as a third arm *only if time permits after §6–§7 are done*.
 If included, use `MoritzLaurer/deberta-v3-base-zeroshot-v2.0`, not `facebook/bart-large-mnli`
 — the latter is the canonical reference baseline rather than the strongest option, and
@@ -250,8 +266,16 @@ distinction for a financial client.
 
 ## 6. Confidence, `Other`, and routing
 
-The observed confidence behaviour on the 12 test emails already validates the design — the
-lowest-confidence predictions are exactly the genuinely ambiguous ones:
+**STALE — every figure below is from the same throwaway probe as §2/§4's original numbers,
+which were both found materially wrong when re-derived in code (§2, §4). This table has not
+been re-run.** Confirmed stale on one data point: `email_4` measures confidence **0.39** in
+this codebase's current (uncalibrated) baseline, not the 0.64 cited below. Do not carry this
+table into the README until it's regenerated from `evaluate.py` and calibrated probabilities
+(step 9) — it is the last unverified block in this plan.
+
+The observed confidence behaviour on the 12 test emails, once regenerated, should validate
+the design — the lowest-confidence predictions ought to be exactly the genuinely ambiguous
+ones:
 
 | Email | Subject | Conf | Margin | Situation |
 |---|---|---|---|---|
@@ -260,8 +284,8 @@ lowest-confidence predictions are exactly the genuinely ambiguous ones:
 | `email_1` | Financial Education Workshop | 0.46 | 0.23 | Event marketing vs advisory |
 | `email_4` | Account Freeze Request | 0.64 | 0.49 | Fraud report — taxonomy gap (§3) |
 
-Report this table. Empirical evidence that the abstain mechanism fires on the right cases is
-far stronger than asserting that it should.
+Report the regenerated table. Empirical evidence that the abstain mechanism fires on the
+right cases is far stronger than asserting that it should.
 
 ### Confidence score
 
@@ -321,8 +345,10 @@ present it as indicative.
 
 ### "How would you measure success"
 
-- Offline: macro-F1 and per-class recall, cross-validated, with the interval at n=44
-  acknowledged — and reported on the **stripped-artifact** condition, not the inflated one.
+- Offline: macro-F1 and per-class recall, cross-validated, with the fold-to-fold interval at
+  n=44 acknowledged (never a single run) — broken out by class so `Other`'s instability
+  doesn't hide inside the average (§2), and reported alongside the **stripped-artifact**
+  condition (§4), not the unstripped headline alone.
 - Deployment: **per-class precision at the operating threshold**, because misrouting cost is
   asymmetric — a misrouted fraud report is not a misrouted marketing email.
 - Operational: auto-route coverage, human-review queue volume, and **downstream reassignment
@@ -349,31 +375,39 @@ present it as indicative.
 
 ```
 email-classifier/
-├── README.md                  # setup, run, design decisions, trade-offs, written analysis
-├── PLAN.md                    # this file (optional to ship)
-├── requirements.txt           # pinned
-├── config.yaml                # threshold, model names, paths — no magic numbers in code
-├── data/                      # provided folder, unmodified
+├── README.md                   # setup, run, design decisions, trade-offs, written analysis [step 12, not yet written]
+├── PLAN.md                     # this file (optional to ship)
+├── NOTES.md                    # session handoff notes (not shipped)
+├── requirements.txt            # pinned
+├── config.yaml                 # threshold, model names, paths — no magic numbers in code
+├── data/                       # provided folder, unmodified
+├── scripts/
+│   └── recon.py                # throwaway §3 data-recon probe; not part of the shipped pipeline
 ├── src/
-│   ├── ingest.py              # HTML parsing -> records (nested body, artifact-aware)
-│   ├── features.py            # text assembly variants (full / stripped / core) for ablation
+│   ├── ingest.py                # HTML parsing -> records (nested body, artifact-aware)
+│   ├── features.py              # text assembly variants (full / stripped / core) for ablation
 │   ├── models/
-│   │   ├── base.py            # shared fit/predict_proba interface — arms are swappable
-│   │   ├── tfidf_lr.py
-│   │   └── embed_lr.py
-│   ├── calibrate.py
-│   ├── routing.py             # threshold, abstain, Other strategy
-│   ├── explain.py             # per-prediction token attribution
-│   ├── evaluate.py            # CV, ablation harness, metrics, comparison
-│   ├── plots.py               # calibration, coverage-accuracy, confusion matrix
-│   └── run.py                 # single-command entrypoint
+│   │   ├── base.py              # shared fit/predict_proba interface — arms are swappable
+│   │   ├── tfidf_lr.py          # shipped baseline arm
+│   │   └── embed_lr.py          # [step 7, not yet built]
+│   ├── evaluate.py              # CV, ablation harness, per-class/reproducibility diagnostics
+│   ├── calibrate.py             # [step 9, not yet built]
+│   ├── routing.py               # threshold, abstain, Other strategy [step 10, not yet built]
+│   ├── explain.py               # per-prediction token attribution [step 10, not yet built]
+│   ├── plots.py                 # calibration, coverage-accuracy, confusion matrix [step 9, not yet built]
+│   └── run.py                   # single-command entrypoint
 ├── tests/
-│   ├── test_ingest.py         # nested unwrap, id mismatch, missing fields
-│   └── test_routing.py        # threshold boundaries
+│   ├── test_ingest.py           # nested unwrap, id mismatch, missing fields
+│   ├── test_features.py         # variant-builder semantics
+│   ├── test_models.py           # ClassifierModel interface + TfidfLRModel
+│   ├── test_evaluate.py         # CV harness, per-class breakdown, reproducibility check
+│   ├── test_run.py              # end-to-end output contract
+│   └── test_routing.py          # threshold boundaries [step 10, not yet built]
 └── outputs/
-    ├── predictions.csv        # THE required deliverable
-    ├── evaluation_report.md   # generated: metrics, ablation table, embedded figures
-    └── figures/
+    ├── predictions.csv          # THE required deliverable
+    ├── ablation_results.csv     # §4 degradation table, generated by `python -m src.evaluate`
+    ├── evaluation_report.md     # [step 11, not yet built]: metrics, ablation table, embedded figures
+    └── figures/                 # [step 9, not yet built]
 ```
 
 `models/base.py` is the key architectural choice: one `fit`/`predict_proba` contract means
@@ -394,17 +428,17 @@ normal run and embedded in `evaluation_report.md`.
 
 ## 9. Build order
 
-1. Scaffold, pinned `requirements.txt`, `config.yaml`.
-2. **`ingest.py` first, with tests.** Nested-HTML unwrap and the `email_id` decision must be
-   right before anything else — everything downstream inherits these bugs.
-3. Reproduce the §3 recon numbers in a throwaway script. Do not carry a claim into the
-   README that you have not re-measured.
-4. **TF-IDF + LR end-to-end to `predictions.csv`.** A valid submittable artefact must exist
-   by day 2.
-5. `models/base.py` + CV harness in `evaluate.py`.
-6. **`features.py` variants + ablation harness** (§4) — this is the centrepiece; give it
-   real time.
-7. Embeddings arm through the same harness.
+1. ~~Scaffold, pinned `requirements.txt`, `config.yaml`.~~ **(done)**
+2. ~~**`ingest.py` first, with tests.** Nested-HTML unwrap and the `email_id` decision must be
+   right before anything else — everything downstream inherits these bugs.~~ **(done)**
+3. ~~Reproduce the §3 recon numbers in a throwaway script.~~ **(done —** `scripts/recon.py`;
+   do not carry a claim into the README that you have not re-measured.
+4. ~~**TF-IDF + LR end-to-end to `predictions.csv`.**~~ **(done)**
+5. ~~`models/base.py` + CV harness in `evaluate.py`.~~ **(done)**
+6. ~~**`features.py` variants + ablation harness** (§4) — this is the centrepiece.~~
+   **(done —** ten variants, five-rung ablation ladder, six perturbations; see NOTES.md.
+7. **Embeddings arm through the same harness. ← next.** Check the §5 headroom premise
+   (`Other`-noise on stripped conditions) before reporting the comparison.
 8. `Other` strategies; compare.
 9. Calibration + `plots.py`.
 10. `routing.py` + `explain.py`; wire `needs_review` and `top_features` into output.
@@ -423,9 +457,10 @@ README — the parts that actually differentiate.
 
 - **Determinism.** Seeds everywhere; identical `predictions.csv` on re-run.
 - **Never break the required CSV contract.**
-- **Never report the inflated number alone.** Any headline accuracy must appear beside the
-  stripped-artifact figure and the fold variance. A bare "100% accuracy" in this submission
-  would read as naivety, not achievement.
+- **Never report a single CV run's number alone.** Any headline macro-F1 must appear beside
+  the per-class breakdown (`Other` vs. the rest), the fold-to-fold variance, and the
+  stripped-artifact figure. A bare "macro-F1 1.000" in this submission would read as
+  naivety, not achievement — it doesn't even reproduce (§2: 0/50 seeds).
 - **Do not declare a winner between arms separated by less than fold-to-fold variance.**
   Say they are indistinguishable at this sample size and explain which you shipped and why.
 - **Flag the synthetic-data caveat once, clearly, early** — then move on. State it; do not

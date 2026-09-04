@@ -1,8 +1,11 @@
 # Handoff notes
 
-Context that's expensive to reconstruct from the commits/code alone. Written at the end
-of the session that completed PLAN.md §9 steps 1–4 (scaffold, ingest.py + tests, recon.py,
-TF-IDF+LR baseline → predictions.csv). Read this before continuing at step 5.
+Context that's expensive to reconstruct from the commits/code alone, organized by topic
+rather than by session. PLAN.md §9 steps 1–6 are done (ingest, recon, TF-IDF+LR baseline,
+CV harness, ablation harness). Read this before continuing at step 7.
+
+For §2/§4's actual CV/ablation numbers, **PLAN.md is the source of truth** — this file cites
+them rather than restating them, so the two documents don't drift apart.
 
 ## Decisions and reasoning
 
@@ -21,10 +24,10 @@ TF-IDF+LR baseline → predictions.csv). Read this before continuing at step 5.
 
 - **`EmailRecord` keeps the body decomposed, not flattened.** `inner_title` and
   `body_paragraphs` are separate fields; `body_text` is a convenience concatenation, not
-  the canonical representation. This is deliberate: `features.py` (step 6, unbuilt) needs
-  to build stripped variants (no title, no greeting/signature, subject-only) for the
-  ablation harness, and that's cheap only if ingest.py hasn't already thrown the structure
-  away.
+  the canonical representation. This is deliberate: `features.py`'s ten variant builders
+  need `body_paragraphs` decomposed to build stripped variants cheaply — that's cheap only
+  because `ingest.py` never flattened the structure away. See the variant-semantics table
+  below for exactly what each builder does with it.
 
 - **Fail loudly, no fallback paths.** `parse_email_file` raises `ValueError` on any missing
   field, missing `.email-body`, missing inner `<title>`, or empty paragraph list. No
@@ -33,42 +36,49 @@ TF-IDF+LR baseline → predictions.csv). Read this before continuing at step 5.
   for. If real malformed input ever shows up, it should surface immediately, not produce a
   silently-wrong row.
 
-- **No `models/base.py` abstraction yet.** PLAN.md's target architecture has a swappable
-  fit/predict_proba interface from the start; I built `src/model.py` as one concrete
-  pipeline instead. Building the interface for a single arm would be speculative — do it
-  in step 5 when the embeddings arm exists to swap against.
+- **`models/base.py` was deliberately deferred past ingest/recon/baseline, then built once
+  the CV harness needed it.** PLAN.md's target architecture has a swappable
+  fit/predict_proba interface from the start; the first three build steps shipped one
+  concrete pipeline instead (an interface for a single arm would have been speculative).
+  Built when `evaluate.py`'s CV harness needed a `model_factory: () -> ClassifierModel`
+  contract to build a fresh unfitted model per fold — not because a second arm existed yet
+  (it doesn't; embeddings is still step 7), but because that contract *is* the
+  fit/predict_proba interface PLAN.md wanted. The old `src/model.py` no longer exists —
+  it's `src/models/tfidf_lr.py` (`TfidfLRModel`) behind `src/models/base.py`.
 
 - **`recon.py` deliberately excludes §2/§4 numbers.** It reproduces only §3's data-only
   facts (counts, structure, lengths, sender noise, taxonomy gap) plus one extension (the
   near-duplicate check, see below). CV accuracy, macro-F1, and the ablation table are
-  model-evaluation results that belong in `evaluate.py` (step 5+) — computing them twice in
-  two different scripts would just create a second place for them to drift out of sync.
+  model-evaluation results that belong in `evaluate.py` — computing them twice in two
+  different scripts would just create a second place for them to drift out of sync.
 
-- **Confidence score is raw, uncalibrated LR probability.** No calibration in step 4 by
-  design (that's step 9). Don't read anything into the current values beyond "the model's
-  own softmax output."
+- **Confidence score is raw, uncalibrated LR probability.** No calibration yet by design
+  (that's step 9). Don't read anything into the current values beyond "the model's own
+  softmax output."
 
 - **`sender` and `date_received` are captured but not fed to the model.** Only
-  `subject + body_text` goes into TF-IDF. This was the correct default given the sender
-  trap-feature finding (below), but it was never an explicit filtering decision inside
-  `model.py` — it's just that nothing there references those columns. If a later session
-  adds sender/date features, that needs the deliberate "measure, then exclude, with
-  evidence" treatment PLAN.md calls for in §3, not a silent inclusion.
+  `features.full_text()` (subject + body_text) goes into TF-IDF. This was the correct
+  default given the sender trap-feature finding (below), but it was never an explicit
+  filtering decision — it's just that no `features.py` builder references those columns.
+  If a later session adds sender/date features, that needs the deliberate "measure, then
+  exclude, with evidence" treatment PLAN.md calls for in §3, not a silent inclusion.
 
-## Exact text assembly (ingest.py → model.py)
+## Exact text assembly (ingest.py → features.py)
 
-This is the contract the step-6 ablation harness needs to build on top of, unambiguously:
+The contract every `features.py` variant is built on top of, unambiguously:
 
 1. `_unwrap_body()` extracts `inner_title` via `title_tag.get_text(strip=True)` (one tag,
    one string).
 2. Each `<p>` in the inner doc is extracted independently via
    `p.get_text(separator=" ", strip=True)`; empty results are filtered out. Order is
-   document order — in this corpus that's consistently `[greeting, body sentence(s),
-   signature name]`, typically 3 paragraphs.
+   document order. **Confirmed, not assumed:** every one of the 56 provided files (44
+   train + 12 test) has exactly 3 paragraphs, in order `(greeting, core, signature)` — this
+   was checked before writing `core_only`/`greeting_and_core`, not trusted. See the
+   variant-semantics table below for the confirmed per-variant detail.
 3. `EmailRecord.body_text = " ".join((inner_title, *body_paragraphs))` — single space
    between every element, inner_title first, then paragraphs in order. No newlines.
-4. `model.build_text_input()` = `df["subject"] + " " + df["body_text"]` — final string fed
-   to `TfidfVectorizer` is `subject, inner_title, paragraph_0, ..., paragraph_n`, all
+4. `features.full_text()` = `df["subject"] + " " + df["body_text"]` — final string fed to
+   `TfidfVectorizer` is `subject, inner_title, paragraph_0, ..., paragraph_n`, all
    single-space-joined.
 5. Nothing dropped is silently dropped: the outer document chrome (outer `<title>`,
    `<h1>`, the header `<p>` duplicating subject) is never extracted in the first place —
@@ -76,12 +86,6 @@ This is the contract the step-6 ablation harness needs to build on top of, unamb
 6. No lowercasing/stopword-removal/punctuation-stripping happens in `ingest.py`. That's
    entirely `TfidfVectorizer`'s job downstream (`stop_words: english` in config.yaml).
    `ingest.py`'s contract stops at "clean structured text out of HTML."
-
-For the "body only, inner `<title>` removed" ablation variant: drop `inner_title` from the
-join in step 3/4, keep everything else. For "core paragraphs only": use `body_paragraphs`
-directly, excluding index 0 (greeting) and index -1 (signature) — but verify that
-first/last-index assumption against the corpus rather than trusting it; I didn't check
-whether every email has exactly the greeting-then-signature shape.
 
 ## The get_text() separator bug
 
@@ -95,7 +99,7 @@ Services,..."` — one glued token where there should be two words.
 **What it would have corrupted:** not a rare edge case — this pattern is in all 56 files,
 so every email's body text would have had a glued title/first-paragraph boundary. After
 TF-IDF tokenization that becomes a garbage compound token (e.g. `transferdear`) instead of
-two real words, in every row. It would specifically have undermined the step-6 ablation:
+two real words, in every row. It would specifically have undermined the ablation harness:
 the "inner title removed" variant depends on cleanly separating title from paragraph text,
 which a glued string can't do correctly.
 
@@ -119,8 +123,8 @@ variant might have inline tags inside a `<p>`). Regression test:
   category signal here.
 - **Inner `<title>` is a near-verbatim paraphrase of `subject`** (e.g. subject "Account
   Transfer Request" → inner title "Account Transfer"). This is a strong artifact/leakage
-  signal sitting right at the start of the body text — explains why PLAN.md's ablation
-  table shows a real drop once it's stripped.
+  signal sitting right at the start of the body text — see PLAN.md §4 for the measured drop
+  once it's stripped.
 - **Baseline confidence scores are uniformly low.** All 12 test predictions from the
   current (uncalibrated) model land in 0.26–0.49 — none above 0.5, even for emails that
   look unambiguous. This is expected for raw multinomial softmax over 5 classes with 44
@@ -129,64 +133,13 @@ variant might have inline tags inside a `<p>`). Regression test:
   predictions. Calibration (step 9) is a real prerequisite for §6's routing/abstain policy
   to mean anything, not just a nice-to-have.
 - **`test/email_4.html` (internal id 53), the fraud-report taxonomy gap, is confirmed** —
-  but the current baseline predicts it Account Management at confidence **0.39**, not
-  PLAN.md's cited 0.64. Different hyperparameters (and possibly different text assembly)
-  than whatever produced that number. The qualitative finding (no category fits) still
-  holds; the specific number in PLAN.md §6's confidence table is stale and needs
-  regenerating from this codebase before it goes in the README.
+  no category fits a fraud report, exactly as PLAN.md §3 argues. Its current measured
+  confidence is tracked in PLAN.md §6 (marked stale there pending recalibration) — not
+  restated here to avoid the two files drifting.
 - **Python 3.14.4 was the only interpreter available on this machine.** `requirements.txt`
   is pinned to versions that resolved cleanly against it (see commit history), but nobody
   has verified this on an older Python. Worth a fresh-clone test on whatever Python version
   is actually common before submission (PLAN.md step 13).
-
-## Where PLAN.md is wrong, underspecified, or worth doing differently
-
-- **The unwrap's hardest part — parser choice and the separator hazard — isn't mentioned
-  at all**, despite PLAN.md flagging the unwrap generally as "easy to get subtly wrong."
-  This was the single biggest gap between PLAN.md's stated risk level and the guidance it
-  gave for avoiding it.
-- **§3's body-length figures (127–204, median 170) don't state what was measured.** It
-  turns out `body_text` (inner_title + paragraphs, joined) reproduces PLAN.md's numbers
-  exactly — confirmed in `scripts/recon.py`. Worth stating explicitly for whoever reads
-  PLAN.md next, since "body only" is ambiguous between several plausible definitions.
-- **The 0.26 near-duplicate figure was off** (now corrected in PLAN.md itself to 0.245,
-  with a note). This is a useful reminder that every number in PLAN.md came from the same
-  throwaway probe and needs the same re-derivation treatment — confirmed right again this
-  session: §2/§4's headline numbers were also off, materially (see the step 5/6 section
-  above). §6's confidence/margin table is the one remaining unverified figure; it needs
-  regenerating from `evaluate.py`/calibration in step 9, same treatment.
-- ~~PLAN.md's repo sketch shows `models/base.py` from the start; I deliberately didn't
-  build it in step 1–4~~ — built this session (`src/models/base.py`, `ClassifierModel`).
-  The trigger wasn't a second arm existing yet (it doesn't — embeddings is still step 7)
-  but the CV harness needing a `model_factory: () -> ClassifierModel` contract to build a
-  fresh unfitted model per fold; that contract is exactly the fit/predict_proba interface
-  PLAN.md wanted, so it made sense to build now rather than duplicate it later.
-
-## Step 5/6 session: PLAN.md §2/§4 numbers re-derived, materially different
-
-The single biggest open item from the previous handoff — "no CV/holdout evaluation exists
-for this exact pipeline" — is resolved. Running `python -m src.evaluate` (5-fold × 10
-repeats, `TfidfLRModel` + `features.full_text`) does **not** reproduce PLAN.md's original
-§2/§4 numbers: `full_text` scores 0.929 ± 0.108 (min 0.731), not 0.986 ± 0.038, and 0/50
-independent single 5-fold splits score a perfect macro-F1.
-
-Diagnosed, not just measured: the instability is almost entirely the `Other` class (F1
-0.727 ± 0.424, min 0.000 across the same 50 folds) — the four real categories score
-0.980 ± 0.031 excluding it, matching the original probe closely. PLAN.md §2 and §4 have
-been rewritten in place with the corrected numbers and this diagnosis; do not use the old
-figures (0.986/0.839/0.950) anywhere downstream (README included) — they do not reproduce
-from this codebase and the session transcript has the full diagnostic if the "why" is
-needed again.
-
-One specific number was also traced to a probable definitional difference rather than a
-bug: the original "core paragraphs only" figure (0.839) is close to this session's
-`greeting_and_core` variant (0.863) — which keeps the greeting — and far from the literal
-"no greeting" reading (`core_only`, 0.674). Most likely the original probe's "core
-paragraphs only" kept the greeting despite its own written definition excluding it. Verified
-this isn't an ingest/assembly bug on this session's side: `core_only`'s output was eyeballed
-against the raw HTML for 3 emails across categories and matches exactly (see `src/features.py`
-`_join_middle`/`core_only`), and `subject_only` reproduces the original probe's number almost
-exactly (0.670 vs 0.667), which also rules out the CV protocol/estimator as the cause.
 
 ## Exact semantics of every features.py variant — read before touching step 7
 
@@ -235,12 +188,12 @@ difference between them is attributable to the text change alone, not to which e
 happened to be hard in that split. No paired-t-test machinery needed; the CV protocol
 already provides the pairing.
 
-That's what makes these two comparisons valid:
+That's what makes these two comparisons valid (see PLAN.md §4 for the exact figures):
 
-- `generic_salutation` (0.920 ± 0.109) vs. `full_text` (0.929 ± 0.108): swapping the greeting
-  while title/subject are still present costs **0.009** — noise-level.
-- `greeting_and_core` (0.863 ± 0.114) vs. `core_only` (0.674 ± 0.118): removing the greeting
-  once title/subject are already gone costs **0.189** — real.
+- `generic_salutation` vs. `full_text`: swapping the greeting while title/subject are still
+  present costs next to nothing.
+- `greeting_and_core` vs. `core_only`: removing the greeting once title/subject are already
+  gone costs real macro-F1.
 
 To re-verify this later (e.g. after the embeddings arm exists, to check the same interaction
 holds for a different model family): run `repeated_stratified_cv` on any two
@@ -269,41 +222,45 @@ arrays (not just the means) is the fold-by-fold effect of that specific text cha
   arrays.** If `plots.py` (step 9) wants a fold-distribution plot (box/violin per variant),
   it needs to call `repeated_stratified_cv` directly for that variant, not read the CSV —
   the CSV has already thrown the per-fold detail away.
-- **`std` is sample std (`ddof=1`)**, not population std — matters if PLAN.md's original
-  numbers ever need re-checking against a `ddof=0` computation (unlikely to matter at n=50
-  folds, but worth knowing which one this codebase uses).
+- **`std` is sample std (`ddof=1`)**, not population std — matters if PLAN.md's numbers
+  ever need re-checking against a `ddof=0` computation (unlikely to matter at n=50 folds,
+  but worth knowing which one this codebase uses).
 - `_DummyModel` wraps `sklearn.dummy.DummyClassifier(strategy="most_frequent")` — it has no
   `config` dependency, so `count_perfect_single_fold_runs(_DummyModel, ...)` works directly
   (see `test_dummy_model_never_scores_a_perfect_single_fold_run`).
 
-## PLAN.md §5–§7 concerns surfaced this session (not yet acted on)
+## Where PLAN.md is wrong, underspecified, or worth doing differently
 
-- **§5's claim that the stripped-artifact ablation gives arms "real headroom to separate
-  them" is untested for whether that headroom is clean signal or more `Other`-noise.** §2's
-  finding — that `Other` (not general unsaturation) drives most of `full_text`'s variance —
-  was only checked on `full_text`. Nobody has run `per_class_f1_cv` on `core_only` or
-  `subject_only` to see whether `Other` is still the dominant source of instability in the
-  stripped conditions. If it is, comparing TF-IDF+LR vs. embeddings on `core_only` will
-  still be partly deciding the comparison by `Other`-noise, not by which arm handles sparse
-  text better — worth checking before leaning on that comparison in the README. Quick check
-  for step 7: `per_class_f1_cv(model_factory, features.core_only(df), labels, seed=...)`.
-- **§7 asks for per-class precision/recall, a confusion matrix, and a coverage-vs-accuracy
-  curve** — `evaluate.py` currently only computes per-class **F1** (`per_class_f1_cv`), not
-  precision/recall separately, and has no confusion-matrix aggregation across folds yet.
-  Both are step-11 (`evaluation_report.md`) work, not done here — flagging so step 11 doesn't
-  assume `evaluate.py` already has everything §7 lists.
-- **§6's confidence/margin table is still stale** (carried over from the previous handoff —
-  unrelated to this session's changes, still needs regenerating once calibration exists).
+- **The unwrap's hardest part — parser choice and the separator hazard — isn't mentioned
+  at all**, despite PLAN.md flagging the unwrap generally as "easy to get subtly wrong."
+  This was the single biggest gap between PLAN.md's stated risk level and the guidance it
+  gave for avoiding it.
+- **§3's body-length figures (127–204, median 170) don't state what was measured.** It
+  turns out `body_text` (inner_title + paragraphs, joined) reproduces PLAN.md's numbers
+  exactly — confirmed in `scripts/recon.py`. Worth stating explicitly for whoever reads
+  PLAN.md next, since "body only" is ambiguous between several plausible definitions.
+- **Every number in PLAN.md traces back to the same throwaway probe, and needed the same
+  re-derivation treatment every time it was checked.** The 0.26 near-duplicate figure was
+  off (corrected in PLAN.md §3 to 0.245). §2's headline CV score and §4's ablation table
+  were also materially wrong when re-derived in code — see PLAN.md §2/§4 for the corrected
+  figures and full diagnosis (not restated here, to keep one home for those numbers). §6's
+  confidence/margin table is the one remaining unverified block — PLAN.md §6 now carries
+  its own STALE marker in place, with the confirmed `email_4` discrepancy.
+- **§5's "real headroom to separate arms" claim on stripped conditions is now flagged
+  directly in PLAN.md §5**, not buried here: whether that headroom is clean signal or more
+  `Other`-noise is untested. The check itself (`per_class_f1_cv` on `core_only`/
+  `subject_only`) is still outstanding — do it in step 7 before reporting the
+  embeddings-arm comparison.
 
 ## Known gaps — do not mistake for finished work
 
-- ~~No CV/holdout evaluation exists for this exact pipeline~~ — resolved this session:
-  `src/evaluate.py` has the repeated stratified CV harness, and `src/run.py` still fits on
-  all 44 labelled rows for the actual `predictions.csv` output (correct — CV is for
-  evaluation, not for shrinking the training set of the shipped model).
 - `config.yaml`'s model hyperparameters (`max_features`, `ngram_range`, `C`,
   `class_weight`) are untuned, unvalidated defaults — documented as "sane defaults" in a
   comment, nothing more.
+- **`evaluate.py` doesn't yet cover everything PLAN.md §7 asks for.** It computes per-class
+  **F1** (`per_class_f1_cv`) but not precision/recall separately, and has no
+  confusion-matrix aggregation across folds. Both are step-11 (`evaluation_report.md`)
+  work — flagging so step 11 doesn't assume `evaluate.py` already has everything §7 lists.
 - `Other` is handled as a plain 5th label only (strategy 1 of 3 in PLAN.md §6) — abstain-as-
   Other and the hybrid gate are not implemented or compared (step 8).
 - No routing/threshold/abstain logic, no `needs_review` column, no `--auto-route-threshold`.
