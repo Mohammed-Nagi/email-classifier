@@ -1,0 +1,18 @@
+# Central configuration for the email classifier pipeline.
+# Grows incrementally as later build steps need new settings — no keys are
+# pre-declared for functionality that does not exist yet.
+
+seed: 42
+
+paths:
+  train_dir: data/train
+  test_dir: data/test
+  train_labels: data/train_labels.csv
+  output_dir: outputs
+
+categories:
+  - Account Management
+  - Investment Advisory
+  - Loan Processing
+  - Insurance Claims
+  - Other
