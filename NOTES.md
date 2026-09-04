@@ -188,6 +188,113 @@ against the raw HTML for 3 emails across categories and matches exactly (see `sr
 `_join_middle`/`core_only`), and `subject_only` reproduces the original probe's number almost
 exactly (0.670 vs 0.667), which also rules out the CV protocol/estimator as the cause.
 
+## Exact semantics of every features.py variant — read before touching step 7
+
+The embeddings arm (step 7) has to run through **these exact same `FEATURE_VARIANTS`
+builders** for the comparison to mean anything — if it builds its own text assembly, the
+ablation/perturbation table becomes two different experiments wearing one table. Precise
+composition of each, in terms of the `EmailRecord` fields it reads:
+
+| Variant | Group | Exact text | Fields touched |
+|---|---|---|---|
+| `full_text` | ablation | `subject` + `inner_title` + `greeting` + `core` + `signature` | `subject`, `body_text` (= `inner_title`+paragraphs, pre-joined in ingest.py) |
+| `no_title` | ablation | `subject` + `greeting` + `core` + `signature` | `subject`, `body_paragraphs` |
+| `greeting_and_core` | ablation | `greeting` + `core` | `body_paragraphs[:2]` |
+| `core_only` | ablation | `core` (= `body_paragraphs[1:-1]` joined; equals `body_paragraphs[1]` alone for this corpus — always exactly 3 paragraphs, checked) | `body_paragraphs` |
+| `subject_only` | ablation | `subject` | `subject` |
+| `no_subject` | perturbation | `inner_title` + `greeting` + `core` + `signature` (literally `body_text` as-is) | `body_text` |
+| `generic_salutation` | perturbation | `subject` + `inner_title` + `"Dear Sir/Madam,"` + `core` + `signature` — **keeps title**, only paragraph 0 is swapped | `subject`, `inner_title`, `body_paragraphs[1:]` |
+| `truncated_first_sentence` | perturbation | `subject` + `greeting` + first sentence of `core` up to and including the first `.` (title and signature dropped, rest of core dropped) | `subject`, `body_paragraphs[0]`, `body_paragraphs[1]` |
+| `distractor_text` | perturbation | `full_text` + fixed quoted-reply string + fixed disclaimer string (both hardcoded in `features.py`, topic-agnostic) | `full_text()` + literals |
+| `synonym_substitution` | perturbation | `full_text` with a regex word-boundary, case-insensitive swap over 9 hardcoded department words (`loan→financing, account→profile, insurance→coverage, claim→case, investment→portfolio, advisory→consultation, advisor→consultant, transfer→move, policy→plan`) | `full_text()` |
+| `typo_noise` | perturbation | `full_text` with ~15% of words (length ≥ 4) getting one adjacent-character swap, via a local `random.Random(seed)` | `full_text()` |
+
+Two things in that table that are easy to get wrong from memory alone:
+
+- **`generic_salutation` keeps the inner `<title>`.** It is *not* built on `no_title` or
+  `core_only` — it's `full_text` with only the greeting paragraph replaced. If a future
+  session wants a "generic salutation AND no title" variant, that's a new builder, not a
+  tweak to the existing one.
+- **`typo_noise`'s seed defaults to a hardcoded `42`, independent of `config['seed']`.**
+  `FEATURE_VARIANTS["typo_noise"]` is called as `builder(df)` everywhere (registry loop in
+  `run_ablation`, in `evaluate.py`'s `main()`), so it always uses the hardcoded default. If
+  `config.yaml`'s seed ever changes, `typo_noise`'s specific corruption pattern will not move
+  with it — the CV splits will use the new seed, but the noise injected into the text won't.
+  Not a bug today (nothing depends on the two seeds matching), but a latent trap if a future
+  session assumes "seed everywhere" means all seeds are threaded from one place.
+
+## How the greeting/title interaction was isolated — re-checkable, not just asserted
+
+**Mechanism**: `RepeatedStratifiedKFold.split(X, y)` stratifies on `y` (labels) only — `X`
+just has to match `y`'s length. Verified directly: built fold splits from `full_text` and
+from `core_only` at the same seed and compared every `(train_idx, test_idx)` pair —
+identical. This means **for a fixed seed, every `FEATURE_VARIANTS` builder gets the exact
+same train/test fold membership**, since they're all built from the same `labelled_df`. Two
+variants' macro-F1 scores at the same seed are therefore a paired comparison for free — a
+difference between them is attributable to the text change alone, not to which examples
+happened to be hard in that split. No paired-t-test machinery needed; the CV protocol
+already provides the pairing.
+
+That's what makes these two comparisons valid:
+
+- `generic_salutation` (0.920 ± 0.109) vs. `full_text` (0.929 ± 0.108): swapping the greeting
+  while title/subject are still present costs **0.009** — noise-level.
+- `greeting_and_core` (0.863 ± 0.114) vs. `core_only` (0.674 ± 0.118): removing the greeting
+  once title/subject are already gone costs **0.189** — real.
+
+To re-verify this later (e.g. after the embeddings arm exists, to check the same interaction
+holds for a different model family): run `repeated_stratified_cv` on any two
+`FEATURE_VARIANTS` builders at the same `seed`, and the difference in `.macro_f1_scores`
+arrays (not just the means) is the fold-by-fold effect of that specific text change —
+`(scores_a - scores_b)` is a valid paired difference vector.
+
+## CV harness gotchas for whoever calls evaluate.py next
+
+- **No caching, no shared fits.** `main()` in `evaluate.py` calls `repeated_stratified_cv`
+  and `per_class_f1_cv` separately for `full_text`, and `run_ablation` calls it again for
+  `full_text` as part of `ABLATION_VARIANTS`. Same splits (same seed), but models are
+  refit from scratch each time — nothing is cached across these calls. `python -m
+  src.evaluate` takes a few seconds on this corpus; if a heavier arm (embeddings) makes that
+  noticeably slow, consider caching fold assignments or fitted vectorizers, but don't assume
+  that exists today.
+- **`model_factory` closures over `config`, not over loop variables.** In `run_ablation`,
+  `lambda: TfidfLRModel(config)` is safe (no late-binding bug) because `config` doesn't
+  change across the loop — only `texts`, which isn't captured by the lambda, is used
+  directly in the `repeated_stratified_cv` call. If a future session parametrizes the model
+  itself per-variant (e.g. different `C` per condition), watch for the classic
+  loop-variable-capture bug.
+- **Variance is reported everywhere in `evaluate.py`'s own output** (`CVResult.summary()`
+  always prints mean ± std, min, max), but **`run_ablation`'s returned DataFrame (and
+  `outputs/ablation_results.csv`) only stores the four summary stats, not the raw per-fold
+  arrays.** If `plots.py` (step 9) wants a fold-distribution plot (box/violin per variant),
+  it needs to call `repeated_stratified_cv` directly for that variant, not read the CSV —
+  the CSV has already thrown the per-fold detail away.
+- **`std` is sample std (`ddof=1`)**, not population std — matters if PLAN.md's original
+  numbers ever need re-checking against a `ddof=0` computation (unlikely to matter at n=50
+  folds, but worth knowing which one this codebase uses).
+- `_DummyModel` wraps `sklearn.dummy.DummyClassifier(strategy="most_frequent")` — it has no
+  `config` dependency, so `count_perfect_single_fold_runs(_DummyModel, ...)` works directly
+  (see `test_dummy_model_never_scores_a_perfect_single_fold_run`).
+
+## PLAN.md §5–§7 concerns surfaced this session (not yet acted on)
+
+- **§5's claim that the stripped-artifact ablation gives arms "real headroom to separate
+  them" is untested for whether that headroom is clean signal or more `Other`-noise.** §2's
+  finding — that `Other` (not general unsaturation) drives most of `full_text`'s variance —
+  was only checked on `full_text`. Nobody has run `per_class_f1_cv` on `core_only` or
+  `subject_only` to see whether `Other` is still the dominant source of instability in the
+  stripped conditions. If it is, comparing TF-IDF+LR vs. embeddings on `core_only` will
+  still be partly deciding the comparison by `Other`-noise, not by which arm handles sparse
+  text better — worth checking before leaning on that comparison in the README. Quick check
+  for step 7: `per_class_f1_cv(model_factory, features.core_only(df), labels, seed=...)`.
+- **§7 asks for per-class precision/recall, a confusion matrix, and a coverage-vs-accuracy
+  curve** — `evaluate.py` currently only computes per-class **F1** (`per_class_f1_cv`), not
+  precision/recall separately, and has no confusion-matrix aggregation across folds yet.
+  Both are step-11 (`evaluation_report.md`) work, not done here — flagging so step 11 doesn't
+  assume `evaluate.py` already has everything §7 lists.
+- **§6's confidence/margin table is still stale** (carried over from the previous handoff —
+  unrelated to this session's changes, still needs regenerating once calibration exists).
+
 ## Known gaps — do not mistake for finished work
 
 - ~~No CV/holdout evaluation exists for this exact pipeline~~ — resolved this session:
