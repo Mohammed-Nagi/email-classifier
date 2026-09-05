@@ -14,6 +14,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.config import load_config
@@ -28,6 +29,8 @@ from src.model import (
 from src.routing import margin, needs_review, runner_up_category
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+PROBABILITY_DECIMALS = 6
 
 # First three are the brief's required columns, in the required order.
 OUTPUT_COLUMNS = [
@@ -58,13 +61,20 @@ def build_predictions(config: dict[str, Any]) -> pd.DataFrame:
     proba = model.predict_proba(test_texts)
     predicted_category, confidence_score = predict_with_confidence(model, test_texts)
 
+    # Round before deriving needs_review, so the flag is verifiable from the
+    # confidence printed beside it. BLAS reassociation makes these differ in
+    # the last couple of ULPs across platforms (~3e-16); at 6dp the CSV is
+    # byte-identical anywhere, which a reproducibility claim needs and no
+    # routing decision is close enough to notice.
+    confidence_score = np.round(confidence_score, PROBABILITY_DECIMALS)
+
     predictions = pd.DataFrame(
         {
             "email_id": test_df["email_id"],
             "predicted_category": predicted_category,
             "confidence_score": confidence_score,
             "source_filename": test_df["source_filename"],
-            "margin": margin(proba),
+            "margin": np.round(margin(proba), PROBABILITY_DECIMALS),
             "runner_up_category": runner_up_category(proba, model.classes_),
             "needs_review": needs_review(
                 confidence_score, config["routing"]["auto_route_threshold"]

@@ -57,6 +57,9 @@ model is TF-IDF + Logistic Regression, chosen partly *because* it has no downloa
 directory, built a fresh Python 3.14.4 virtualenv, ran `pip install -r requirements.txt`
 cold, then `python -m src.run`. It produced `outputs/predictions.csv` byte-identical to the
 one committed here, and the full test suite passed in that same clean environment.
+Probabilities are written rounded to 6 decimal places so that holds on *any* machine —
+unrounded, BLAS reassociation moves the last couple of ULPs between platforms, which is
+below any routing decision but enough to break a byte-identical claim.
 
 Every number in this README is reproducible from a second command, not just asserted:
 
@@ -146,6 +149,16 @@ lexically, like a routine account-service request. A confidence gate catches wha
 doesn't know it doesn't know. It cannot catch a case where the model is sure and wrong
 because the label space is missing a category — that's a taxonomy problem, not a modelling
 one, and no threshold tuning fixes it.
+
+**A manual read of all 12 test emails points the same way** — as a sanity check, not a
+measured accuracy, since 12 unlabelled examples can't support one. By my own reading (not
+ground truth), 10 of the 12 predictions are unambiguously right, and the two I'd contest are
+exactly the two the gate flags. `email_1` ("Financial Education Workshop", an events notice
+from `hr@redrock.com`) is most likely `Other`, given how the training set uses that bucket;
+the model's top pick is Investment Advisory, but at 0.43 confidence with `Other` as
+runner-up and `needs_review=True`. `email_6` is correctly `Other` and also flagged, and
+`email_9` is borderline but defensible. That the escalation policy caught both contestable
+cases without being tuned on them is independent evidence it works.
 
 Every prediction's `top_features` column gives the audit trail a compliance reviewer would
 need — computed from a separate model fit on all 44 examples rather than the shipped

@@ -31,6 +31,24 @@ def test_build_predictions_output_contract(config: dict) -> None:
     assert predictions["top_features"].apply(lambda s: isinstance(s, str)).all()
 
 
+def test_probabilities_are_rounded_so_the_csv_is_platform_stable(config: dict) -> None:
+    """Unrounded, these differ in the last ULPs across BLAS implementations,
+    which would break the reproducibility claim the submission rests on."""
+    predictions = build_predictions(config)
+
+    for column in ("confidence_score", "margin"):
+        assert (predictions[column].round(6) == predictions[column]).all()
+
+
+def test_needs_review_agrees_with_the_confidence_column_as_written(config: dict) -> None:
+    """A reader must be able to re-derive the flag from the printed number."""
+    predictions = build_predictions(config)
+    threshold = config["routing"]["auto_route_threshold"]
+
+    expected = predictions["confidence_score"] < threshold
+    assert (predictions["needs_review"] == expected).all()
+
+
 def test_run_is_deterministic(config: dict) -> None:
     first = build_predictions(config)
     second = build_predictions(config)
