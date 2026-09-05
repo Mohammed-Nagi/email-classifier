@@ -1,11 +1,9 @@
-"""Ingestion: parse RedRock's HTML email files and the labels CSV into records.
+"""Parse RedRock's HTML email files and the labels CSV into records.
 
-Each email file is an outer HTML document with metadata in ``data-field`` divs
-and a body div (``.email-body``) whose content is itself a second, complete
-HTML document (its own ``<!DOCTYPE html>``, ``<title>``, and body). This module
-unwraps that nested document and returns structured, decomposed records so
-downstream feature engineering can select which parts of the body to use
-without re-parsing HTML.
+Each file is an outer HTML document with metadata in ``data-field`` divs and a
+body div whose content is itself a second complete HTML document. This module
+unwraps that and keeps the body decomposed, so feature builders can select
+parts of it without re-parsing HTML.
 """
 
 from __future__ import annotations
@@ -21,12 +19,8 @@ REQUIRED_META_FIELDS = ("email_id", "subject", "sender", "date_received")
 
 @dataclass(frozen=True)
 class EmailRecord:
-    """A single parsed email, with the nested body decomposed into parts.
-
-    ``inner_title`` and ``body_paragraphs`` are kept separate (rather than
-    pre-flattened) so later feature-stripping ablations can drop artifacts
-    like the inner title without re-parsing the source HTML.
-    """
+    """A parsed email. ``inner_title`` and ``body_paragraphs`` stay separate
+    (not pre-flattened) so ablations can drop artifacts without re-parsing."""
 
     email_id: int
     source_filename: str
@@ -61,6 +55,9 @@ def _unwrap_body(soup: BeautifulSoup, source_filename: str) -> tuple[str, tuple[
         raise ValueError(f"{source_filename}: nested document has no <title>")
     inner_title = inner_title_tag.get_text(strip=True)
 
+    # Extract per element, never one get_text() across tags: every file has
+    # <title>X</title><p>Y</p> with no whitespace between, which a single call
+    # would glue into "XY" — one garbage token per email after tokenization.
     paragraphs = tuple(
         p.get_text(separator=" ", strip=True) for p in inner_soup.find_all("p")
     )

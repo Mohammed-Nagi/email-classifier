@@ -20,6 +20,11 @@ and no topic coherence — some CV folds score it 0 outright. Folded into one 5-
 its instability is what makes the headline number swing, not any weakness in the four real
 categories, which are genuinely near-saturated at 0.980.
 
+That saturation isn't leakage, which is the first thing worth ruling out: mean
+nearest-neighbour cosine similarity within the training set is **0.245**, so the corpus
+doesn't near-duplicate itself. The task is genuinely keyword-separable — short, templated
+text where the category words appear near-verbatim.
+
 **A single CV run would not have shown this.** Across 50 independent single (non-repeated)
 5-fold splits on this exact pipeline, **0 of 50** scored a perfect macro-F1 — a "macro-F1 =
 1.000" report from this data isn't a lucky outlier, it doesn't reproduce at all in 50 tries.
@@ -48,27 +53,25 @@ Produces `outputs/predictions.csv`: `email_id, predicted_category, confidence_sc
 model is TF-IDF + Logistic Regression, chosen partly *because* it has no download (see
 "Investigated and deferred" below).
 
-**Verified with a genuine fresh-clone test this session**, not asserted: cloned the repo
-into a scratch directory, built a fresh Python 3.14.4 virtualenv, ran `pip install -r
-requirements.txt` cold, then `python -m src.run`. It produced `outputs/predictions.csv`
-byte-identical to the one committed here, and the full test suite (62 tests) passed in that
-same clean environment.
+**Verified with a genuine fresh-clone test**, not asserted: cloned the repo into a scratch
+directory, built a fresh Python 3.14.4 virtualenv, ran `pip install -r requirements.txt`
+cold, then `python -m src.run`. It produced `outputs/predictions.csv` byte-identical to the
+one committed here, and the full test suite passed in that same clean environment.
 
 Every number in this README is reproducible from a second command, not just asserted:
 
 | Command | Reproduces |
 |---|---|
-| `python -m src.evaluate` | CV headline, per-class breakdown, 0/50 reproducibility check, ablation table |
-| `python -m src.calibrate` | Raw vs. calibrated Brier/ECE, paired flip-rate check |
+| `python -m src.evaluate` | CV headline, per-class breakdown, 0/50 reproducibility check, near-duplicate check, ablation table |
+| `python -m src.calibrate` | Raw vs. calibrated Brier/ECE, paired flip-rate check, domain-shift check |
 | `python -m src.routing` | Coverage/accuracy curve behind the 0.45 threshold |
-| `python -m pytest` | 62 tests |
+| `python -m pytest` | 42 tests |
 
 `config.yaml` holds every threshold and hyperparameter (no magic numbers in code);
-`--auto-route-threshold` overrides the routing cutoff at the command line. The
-`ClassifierModel` interface (`src/models/base.py`) is the one architectural choice worth
-naming: the CV harness, ablation, calibration, and routing are all written once against it,
-so the model is what a data scientist swaps and the routing policy is what a compliance
-team changes, without either touching the other.
+`--auto-route-threshold` overrides the routing cutoff at the command line. The one seam
+worth naming is a callable, not a class hierarchy: every consumer (CV, ablation,
+calibration, routing) takes a `model_factory: () -> model` and needs only
+`fit`/`predict_proba`/`classes_`, so swapping the model touches none of them.
 
 ## The ablation: what the model actually depends on
 
@@ -102,11 +105,6 @@ for "Dear Sir/Madam," while title and subject are still present costs almost not
 (0.920 vs. 0.929, a 0.009 difference) — but removing it once title and subject are already
 gone costs 0.19 (0.674 vs. 0.863). The greeting is redundant leakage when richer artifacts
 are present and becomes load-bearing leakage once they're gone.
-
-Separately, six perturbations (typos, synonym substitution, a distractor reply chain,
-truncation) each cost under 0.03 macro-F1 — inside fold-to-fold noise. **The model is
-robust to messy input and dependent on structural scaffolding** — a more specific, and more
-useful, claim than "fragile to real-world conditions."
 
 ## Confidence, calibration, and routing
 
@@ -235,7 +233,12 @@ lower priority than the other two arms.
 - **Synthetic, single-topic, artifact-rich corpus.** Real inbox mail is messier in ways this
   data isn't; the ablation table is the closest proxy available, not a substitute.
 - **Calibration is indicative, not authoritative.** ECE 0.359 after calibration, fit on 44
-  points with a 6-example class — stated plainly rather than glossed over.
+  points with a 6-example class — stated plainly rather than glossed over. The obvious
+  follow-up worry — that calibrating on clean synthetic data bakes in overconfidence for
+  messier real input — was checked rather than assumed: training on full text and scoring
+  the held-out fold on stripped text (`core_only`), the confidence–accuracy gap *shrinks*
+  (ECE 0.359 → 0.241) rather than inverting. That's reassuring, not conclusive; `core_only`
+  is still synthetic text, and real mail could behave differently.
 - **The confidence gate has a structural blind spot.** It can't catch a confidently wrong
   prediction caused by a missing category — see the fraud report above.
 - **`email_id` ≠ filename** for all 56 provided files. Both are emitted in the output CSV so

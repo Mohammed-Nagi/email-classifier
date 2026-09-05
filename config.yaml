@@ -1,7 +1,3 @@
-# Central configuration for the email classifier pipeline.
-# Grows incrementally as later build steps need new settings — no keys are
-# pre-declared for functionality that does not exist yet.
-
 seed: 42
 
 paths:
@@ -18,33 +14,22 @@ categories:
   - Other
 
 model:
-  # TF-IDF: min_df=1 because the corpus is only 44 documents — any higher
-  # would drop discriminative words that happen to appear once. ngram_range
-  # (1, 2) captures short department-naming phrases ("loan officer").
+  # min_df=1: at 44 documents anything higher drops discriminative words that
+  # happen to appear once. Bigrams catch "loan officer". Untuned defaults.
   tfidf:
     max_features: 5000
     ngram_range: [1, 2]
     stop_words: english
     min_df: 1
-  # Logistic Regression: class_weight=balanced because train has mild
-  # imbalance (13 vs 6 across the 5 classes). Not yet tuned against a CV
-  # harness (that lands with evaluate.py) — these are sane defaults.
   logistic_regression:
     C: 1.0
     max_iter: 1000
     class_weight: balanced
 
 routing:
-  # Calibrated-confidence cutoff for auto-route vs. needs_review (PLAN.md §6).
-  # Chosen empirically from the coverage/accuracy curve on pooled
-  # out-of-fold calibrated CV predictions (`python -m src.routing`):
-  # threshold=0.45 auto-routes 89.1% of predictions with 100.0% accuracy
-  # among them, while the reviewed 10.9% has only 75.0% accuracy — the gate
-  # concentrates the model's actual errors into the review queue rather than
-  # passing them through. This is an ordinal choice, not a formal
-  # cost-of-error calculation: calibrated confidence is a much better
-  # ranking than raw confidence but is still measurably imperfect (ECE
-  # 0.359, PLAN.md §6), so it's treated as "how sure was the model,
-  # relatively," not as P(correct) precise enough to multiply by a cost
-  # figure. Override at the command line with --auto-route-threshold.
+  # Calibrated-confidence cutoff for auto-route vs. needs_review, read off the
+  # coverage/accuracy curve (`python -m src.routing`): at 0.45, 89.1% of
+  # predictions auto-route at 100.0% accuracy while the reviewed 10.9% is only
+  # 75.0% accurate. An ordinal choice — post-calibration ECE (0.359) is too
+  # coarse to treat this as P(correct) in a cost calculation.
   auto_route_threshold: 0.45

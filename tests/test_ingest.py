@@ -95,6 +95,17 @@ def test_ingest_directory_returns_expected_counts() -> None:
     assert len(ingest_directory(TEST_DIR)) == 12
 
 
+def test_sender_field_is_a_trap_feature() -> None:
+    """Pins the README's claim for excluding sender: the address contradicts
+    the topic, so a sender-derived feature would learn noise."""
+    by_filename = {r.source_filename: r for r in ingest_directory(TRAIN_DIR)}
+
+    assert by_filename["email_10.html"].sender == "security@redrock.com"
+    assert by_filename["email_10.html"].subject == "Job Application Response"
+    assert by_filename["email_11.html"].sender.endswith("@gmail.com")
+    assert by_filename["email_11.html"].subject == "System Maintenance Notice"
+
+
 def test_parse_file_missing_required_field_raises(tmp_path: Path) -> None:
     html = VALID_EMAIL_HTML.replace('<div data-field="subject">Account Transfer Request</div>', "")
     bad_file = tmp_path / "bad.html"
