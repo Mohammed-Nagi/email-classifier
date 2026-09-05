@@ -300,27 +300,31 @@ distinction for a financial client.
 
 ## 6. Confidence, `Other`, and routing
 
-**STILL STALE — the table below has not been regenerated.** Calibration (step 9) is now
-done — see "Confidence score" below for the measured before/after — but the table needs
-**margin** (step 10) alongside calibrated confidence to be worth regenerating once, not
-twice. Confirmed stale on one data point in the meantime: `email_4` (test id 53) now
-measures calibrated confidence **0.68**, not the raw-model 0.39 this file previously
-confirmed, and not the 0.64 originally cited below (which predates both fixes). Do not carry
-this table into the README until step 10 regenerates it with both columns.
+**Regenerated, step 10 — no longer stale.** Full 12-row table in `outputs/predictions.csv`
+(`python -m src.run`); the four cases originally singled out here, with real calibrated
+confidence and margin:
 
-The observed confidence behaviour on the 12 test emails, once regenerated, should validate
-the design — the lowest-confidence predictions ought to be exactly the genuinely ambiguous
-ones:
+| Email | Subject | Conf | Margin | `needs_review` (t=0.45) | Situation |
+|---|---|---|---|---|---|
+| `email_6` | New Product Announcement | 0.44 | 0.16 | **True** | Marketing — Other vs Account Management |
+| `email_1` | Financial Education Workshop | 0.43 | 0.16 | **True** | Event marketing vs advisory |
+| `email_9` | Market Research Request | 0.57 | 0.43 | False | Borderline, but above threshold |
+| `email_4` | Account Freeze Request | 0.68 | 0.48 | **False** | Fraud report — taxonomy gap (§3) |
 
-| Email | Subject | Conf | Margin | Situation |
-|---|---|---|---|---|
-| `email_6` | New Product Announcement | 0.34 | 0.08 | Marketing — Other vs Investment Advisory |
-| `email_9` | Market Research Request | 0.37 | 0.07 | Genuinely borderline |
-| `email_1` | Financial Education Workshop | 0.46 | 0.23 | Event marketing vs advisory |
-| `email_4` | Account Freeze Request | 0.64 | 0.49 | Fraud report — taxonomy gap (§3) |
+**The design validates on the two genuinely ambiguous marketing emails — `email_6` and
+`email_1` are exactly the two the gate flags for review, out of 12.** That's the mechanism
+working as intended: real, empirical evidence the abstain gate fires on the right cases,
+not an assertion that it should.
 
-Report the regenerated table. Empirical evidence that the abstain mechanism fires on the
-right cases is far stronger than asserting that it should.
+**`email_4` is the mechanism's honest limitation, not a hidden failure — say so in the
+README, don't bury it.** The fraud report is *not* flagged for review, and its
+top-contributing token is unambiguous about why: `account (+0.61)` — "freeze my account" is
+lexically almost indistinguishable from a routine Account Management request, so the model
+is confidently wrong, not uncertain. A confidence gate only catches what the model is
+unsure about; it cannot catch a case where the model is sure and wrong for a structural
+reason (the taxonomy has no category for this email at all — §3). This is exactly why §3
+raises the missing fraud/security category as a business finding independent of the
+modelling: no threshold tuning fixes a label space that's missing a label.
 
 ### Confidence score
 
@@ -356,37 +360,90 @@ right cases is far stronger than asserting that it should.
    would be re-fit properly.
 3. Report **margin** (top-1 − top-2) as an extra column — for routing, "which two
    departments is it torn between" is more actionable than absolute confidence.
-   **Not yet built — step 10.**
+   **Done, step 10** (`src/routing.py`).
+
+**On treating calibrated confidence as a ranking, not a probability for cost arithmetic.**
+ECE 0.359 after calibration is a real, substantial improvement over raw (0.613) — but it
+is not zero, and mean confidence (0.62) still trails pooled accuracy (0.97) by a wide
+margin. Calibrated confidence is a genuinely useful *relative ordering* — the coverage/
+accuracy curve below shows it separates hard cases from easy ones cleanly — but it is not
+precise enough to support a claim like "this prediction is 68% likely to be correct,
+multiply by the misrouting cost." The routing policy below is designed around that
+distinction deliberately: the threshold is read off an empirical coverage/accuracy curve,
+not derived from a formal expected-cost calculation.
+
+**Connecting this to §4's ablation finding, for the README.** It's tempting to conclude
+that calibrating on this corpus risks *baking in overconfidence* for messier real-world
+input, since accuracy craters under stripping (§4: 0.98 → 0.83 four-class, `core_only`).
+**Checked directly, not just reasoned about — and the result is the opposite of what that
+argument predicts.** Fitting and calibrating on the training fold's `full_text`, then
+evaluating on the *held-out* fold's `core_only` text (a genuine, non-leaking proxy for
+"harder input arrives at inference time"): the accuracy–confidence gap **shrinks**, for
+both models — raw 0.613→0.468, calibrated 0.359→0.241. Confidence tracks the accuracy drop
+reasonably well here rather than lagging behind it; nothing inverts into overconfidence in
+this test. The theoretical risk (a calibration curve fit on clean data could miscalibrate
+on production input) remains real in principle and worth stating in the README as a
+limitation — synthetic, single-topic training data is a poor proxy for real inbox
+noise (§7) — but this specific, measurable check does not confirm it materialising, and
+that null result belongs in the README next to the theoretical concern, not instead of it.
 
 ### `Other` strategy — implement and compare at least two
 
-1. **Normal fifth label** (supervised baseline).
+**Deferred (step 8), same time-budget reasoning as the embeddings arm** — see §5, §9.
+Shipped: strategy 1 only.
+
+1. **Normal fifth label** (supervised baseline). **Shipped.**
 2. **Abstain-as-Other** — predict over the four real categories; if none clears threshold,
    assign `Other`. Semantically honest: "none of these departments" is what `Other` means.
+   Not built.
 3. **Hybrid** — four-way topic model plus a binary "is this routable business
-   correspondence?" gate.
+   correspondence?" gate. Not built.
 
-Strategy 2 is the one to beat and aligns with the routing framing.
+Strategy 2 would be the one to beat and aligns with the routing framing, if time permits a
+revisit after step 12.
 
-### Routing policy
+### Routing policy — done, step 10
 
-Explicit **abstain / human-review band**: above threshold → auto-route; below → flag
-`needs_review` for a human queue. Choose the threshold by **cost-weighted reasoning** — a
-misrouted fraud report or insurance claim costs far more than an extra email in a human
-queue. The threshold lives in `config.yaml`, exposed as `--auto-route-threshold`. No magic
-numbers in code.
+Explicit **abstain / human-review band**: `confidence >= threshold` → auto-route;
+`< threshold` → flag `needs_review` (`src/routing.py`). **The threshold is chosen from the
+empirical coverage/accuracy curve, not a formal cost-weighted calculation** — calibrated
+confidence is a much better ranking than raw but still measurably imperfect (ECE 0.359,
+above), so treating it as precise enough for expected-cost arithmetic would overstate what
+it actually is. `config.yaml`'s `routing.auto_route_threshold: 0.45` was picked because,
+on pooled out-of-fold calibrated CV predictions (`python -m src.routing`): it auto-routes
+89.1% of predictions at **100.0%** accuracy among them, while the reviewed 10.9% has only
+75.0% accuracy — the gate concentrates the model's actual errors into the review queue
+rather than passing them through, which is the property that matters, independent of
+whether 0.45 is precisely the "right" number. Exposed as `--auto-route-threshold`; no
+magic numbers in code.
 
-### Explainability (regulated-context requirement)
+### Explainability (regulated-context requirement) — done, step 10
 
-For every prediction, emit the **top contributing tokens** from the LR coefficients. Cheap
-with a linear model, and it turns the output into an audit trail: a compliance reviewer can
-see *why* an email was routed, not just where. Include a worked example in the README.
+For every prediction, `top_features` (`src/explain.py`) emits the **top contributing
+tokens** from LR coefficients — cheap with a linear model, and it turns the output into an
+audit trail. **Computed from a separate, uncalibrated fit on all 44 training examples, not
+the shipped `CalibratedTfidfLRModel`'s own internals** — `CalibratedClassifierCV`'s 3
+internal sub-fits (`cv=3`) hold substantially different TF-IDF vocabularies (measured: only
+135 of 1018 union words shared across all three), so averaging their coefficients would
+misrepresent the model rather than approximate it. A single fit on all 44 examples is both
+simpler and faithful to the actual decision: calibration doesn't change the argmax for 0 of
+the 12 real test predictions (above), so this explains the same decision the shipped model
+made. State this explicitly in the README — it's a real design choice with a measured
+justification, not an inconsistency to gloss over.
 
-### Output contract
+**Worked example for the README:** `email_4` (Account Freeze Request, the fraud-report
+taxonomy gap from §3) is predicted Account Management with top features `account (+0.61),
+request (+0.05), request account (+0.05), immediately (+0.02), transactions (+0.01)` — "my
+account... immediately" reads, lexically, almost identically to a routine account-service
+request. This is exactly why the confidence gate above doesn't flag it: the model isn't
+uncertain, it's confidently applying the wrong (because missing) category. The explanation
+makes that failure legible to a reviewer instead of hiding it behind a single number.
 
-Keep `email_id, predicted_category, confidence_score` exactly as specified, first and
-correctly named. Additional columns after: `source_filename`, `margin`,
-`runner_up_category`, `needs_review`, `top_features`. Never break the required contract.
+### Output contract — done, step 10
+
+`email_id, predicted_category, confidence_score` kept exactly as specified, first and
+correctly named. Additional columns, in order: `source_filename`, `margin`,
+`runner_up_category`, `needs_review`, `top_features` (`src/run.py`, `OUTPUT_COLUMNS`).
 
 ---
 
@@ -450,25 +507,29 @@ email-classifier/
 │   │   └── tfidf_lr.py          # shipped baseline arm (embeddings arm investigated, deferred — §5)
 │   ├── evaluate.py              # CV, ablation harness, per-class/reproducibility diagnostics
 │   ├── calibrate.py             # sigmoid calibration, Brier/ECE, paired raw-vs-calibrated check
-│   ├── routing.py               # threshold, abstain, Other strategy [step 10, not yet built]
-│   ├── explain.py               # per-prediction token attribution [step 10, not yet built]
-│   ├── plots.py                 # calibration, coverage-accuracy, confusion matrix [step 9/11: figure
+│   ├── routing.py               # margin, runner-up, threshold gate, coverage/accuracy curve
+│   ├── explain.py               # per-prediction token attribution (separate uncalibrated fit — §6)
+│   ├── plots.py                 # calibration, coverage-accuracy, confusion matrix [step 11: figure
 │   │                             #   rendering deferred to evaluation_report.md assembly; the data
-│   │                             #   (reliability curve, per-class F1) is already CSV output]
-│   └── run.py                   # single-command entrypoint — ships CalibratedTfidfLRModel
+│   │                             #   (reliability curve, coverage/accuracy curve, per-class F1) is
+│   │                             #   already CSV output]
+│   └── run.py                   # single-command entrypoint — ships CalibratedTfidfLRModel,
+│                                 #   full output contract (margin, needs_review, top_features, ...)
 ├── tests/
 │   ├── test_ingest.py           # nested unwrap, id mismatch, missing fields
 │   ├── test_features.py         # variant-builder semantics
 │   ├── test_models.py           # ClassifierModel interface + TfidfLRModel
 │   ├── test_evaluate.py         # CV harness, per-class breakdown, reproducibility check
 │   ├── test_calibrate.py        # calibrated model, Brier/ECE correctness, paired comparison
-│   ├── test_run.py              # end-to-end output contract
-│   └── test_routing.py          # threshold boundaries [step 10, not yet built]
+│   ├── test_routing.py          # margin, runner-up, threshold boundary, coverage/accuracy curve
+│   ├── test_explain.py          # top-token attribution, formatting
+│   └── test_run.py              # end-to-end output contract
 └── outputs/
-    ├── predictions.csv          # THE required deliverable — calibrated confidence
+    ├── predictions.csv          # THE required deliverable — calibrated confidence, full contract
     ├── ablation_results.csv     # §4 degradation table, generated by `python -m src.evaluate`
     ├── ablation_per_class.csv   # per-class F1 across the ablation ladder (§2/§4 decontamination)
     ├── calibration_reliability.csv  # reliability-curve bins, raw vs. calibrated (§6)
+    ├── coverage_accuracy.csv    # coverage/accuracy per threshold candidate (§6 routing policy)
     ├── evaluation_report.md     # [step 11, not yet built]: metrics, ablation table, embedded figures
     └── figures/                 # [step 11, not yet built]
 ```
@@ -514,8 +575,14 @@ normal run and embedded in `evaluation_report.md`.
    already written to `outputs/calibration_reliability.csv`, so step 11 renders from data
    already produced rather than choosing between "build plots.py now" and "duplicate the
    computation later."
-10. **`routing.py` + `explain.py`; wire `needs_review` and `top_features` into output. ← next.**
-11. `evaluate.py` generates `evaluation_report.md`.
+10. ~~`routing.py` + `explain.py`; wire `needs_review` and `top_features` into output.~~
+    **(done —** threshold=0.45 chosen from the coverage/accuracy curve (100.0% accuracy on
+    the 89.1% auto-routed, 75.0% on the 10.9% reviewed); the two genuinely ambiguous test
+    emails from §6's old stale table (`email_6`, `email_1`) are exactly the two flagged
+    `needs_review`; `email_4` (fraud-report taxonomy gap) is confidently *not* flagged —
+    a named limitation, not a hidden one. `explain.py` uses a separate uncalibrated fit,
+    reasoned and measured in §6/NOTES.md. Full output contract now in `predictions.csv`.
+11. **`evaluate.py` generates `evaluation_report.md`. ← next.**
 12. **README** — the §2 framing up front, then setup, run, design decisions, both written
     answers, and an **"Investigated and rejected"** section (sender field, arms that lost,
     `Other` strategies not chosen, why fine-tuning and LLM APIs were excluded).

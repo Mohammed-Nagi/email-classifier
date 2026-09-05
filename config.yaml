@@ -33,3 +33,18 @@ model:
     C: 1.0
     max_iter: 1000
     class_weight: balanced
+
+routing:
+  # Calibrated-confidence cutoff for auto-route vs. needs_review (PLAN.md §6).
+  # Chosen empirically from the coverage/accuracy curve on pooled
+  # out-of-fold calibrated CV predictions (`python -m src.routing`):
+  # threshold=0.45 auto-routes 89.1% of predictions with 100.0% accuracy
+  # among them, while the reviewed 10.9% has only 75.0% accuracy — the gate
+  # concentrates the model's actual errors into the review queue rather than
+  # passing them through. This is an ordinal choice, not a formal
+  # cost-of-error calculation: calibrated confidence is a much better
+  # ranking than raw confidence but is still measurably imperfect (ECE
+  # 0.359, PLAN.md §6), so it's treated as "how sure was the model,
+  # relatively," not as P(correct) precise enough to multiply by a cost
+  # figure. Override at the command line with --auto-route-threshold.
+  auto_route_threshold: 0.45

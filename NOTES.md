@@ -177,6 +177,59 @@ invocations happened to get identical folds, it's guaranteed by construction. Wo
 this pattern again for any future "did X change predictions, not just a score" question,
 rather than reaching for two independent CV calls plus the same-seed argument.
 
+## Routing and explainability (step 10)
+
+**Threshold (0.45) is read off `coverage_accuracy_curve`, not derived from a cost model.**
+Calibrated confidence's ECE is 0.359 — a big improvement over raw (0.613) but still far
+from zero, and mean confidence (0.62) trails pooled accuracy (0.97) substantially. Treating
+it as a precise `P(correct)` for "expected cost = P(wrong) × $cost" arithmetic would
+overstate what was actually measured. It's a good *relative ranking* (the coverage/accuracy
+curve shows it separates hard from easy cleanly) and the threshold is picked as the point
+on that curve where auto-routed accuracy hits 100% (0.45: 89.1% coverage, 100.0% auto-routed
+accuracy, 75.0% reviewed accuracy) — an ordinal choice, explicitly documented as such in
+`config.yaml`'s comment and `routing.py`'s module docstring, not a hedge added after the
+fact.
+
+**Checked and rejected: "calibrating on this corpus bakes in overconfidence for messier
+real input."** The intuitive worry: accuracy craters under stripping (§4, `core_only`:
+0.831 four-class), so a calibration curve tuned to this corpus's ~96% accuracy might
+overstate confidence once real mail is harder. Tested directly with a genuine held-out
+domain-shift check (not just reasoning about it): fit + calibrate on the *training* fold's
+`full_text`, evaluate on the *held-out* fold's `core_only` text. Result: the
+accuracy-confidence gap **shrinks** for both models (raw 0.613→0.468, calibrated
+0.359→0.241) — it does not invert into overconfidence. This is the specific check; it does
+not prove the risk can never materialise on real, noisier-than-`core_only` mail (§7's
+synthetic-data caveat still stands), but the measurable proxy available doesn't confirm the
+feared direction, and that null result is worth exactly as much space in the README as the
+theoretical concern that motivated checking it.
+
+**Why `explain.py` fits its own uncalibrated model rather than reaching into
+`CalibratedClassifierCV`'s internals — verified, not assumed.** Inspected
+`model._model.calibrated_classifiers_` directly (`cv=3` → 3 inner sub-fits): each holds a
+full independently-fit `Pipeline` with its **own TF-IDF vocabulary**, since `min_df=1` on
+this tiny corpus means any word appearing once in that sub-fit's ~29-example training slice
+enters its vocabulary. Measured: vocab sizes 729/701/741, but only **135 of 1018** union
+words are shared across all three. Averaging `coef_` across these would require vocabulary
+alignment (zero-padding missing features) and would represent a weaker, blended model
+trained on less data per sub-fit than a single fit on all 44 examples — not a faithful
+approximation of anything. `explain.py` instead fits a plain `TfidfLRModel` on all 44
+training examples, purely for token attribution. This is defensible specifically *because*
+calibration was already shown not to change the decision (0/12 real test flips, 2.5% pooled
+flip rate, §6/NOTES.md "Calibration" section above) — the uncalibrated fit's argmax is, for
+all but a small measured fraction of cases, the same decision the shipped calibrated model
+made, just not literally the same fitted object. If a future session changes calibration
+method or `cv`, re-verify the flip rate stays negligible before continuing to rely on this.
+
+**`needs_review` validated empirically on the actual 12 test predictions, not just CV.**
+The two flagged (`email_6` "New Product Announcement", `email_1` "Financial Education
+Workshop") are exactly the two lowest-confidence, most genuinely-ambiguous emails from the
+old (now-regenerated) §6 stale table — real evidence the gate does what it's for. `email_4`
+(the fraud-report taxonomy gap, §3) is *not* flagged (confidence 0.68, well above 0.45) —
+its top feature is `account (+0.61)`, i.e. the model is confidently, lexically-reasonably
+wrong, not uncertain. Worth stating in the README as the mechanism's honest limit: a
+confidence gate catches what the model doesn't know it doesn't know, not what it's
+confidently wrong about for a structural (missing-category) reason.
+
 ## Exact text assembly (ingest.py → features.py)
 
 The contract every `features.py` variant is built on top of, unambiguously:
@@ -383,8 +436,10 @@ arrays (not just the means) is the fold-by-fold effect of that specific text cha
   work — flagging so step 11 doesn't assume `evaluate.py` already has everything §7 lists.
 - `Other` is handled as a plain 5th label only (strategy 1 of 3 in PLAN.md §6) — abstain-as-
   Other and the hybrid gate are not implemented or compared (step 8).
-- No routing/threshold/abstain logic, no `needs_review` column, no `--auto-route-threshold`.
-- No explainability / token attribution (`explain.py` doesn't exist).
+- Routing/threshold/abstain (step 10) is done for strategy 1 (plain 5th-label `Other`)
+  only — abstain-as-`Other` and the hybrid gate (PLAN.md §6, strategies 2-3) are still not
+  built (deferred with step 8).
+- Explainability / token attribution (step 10) is done (`explain.py`).
 - No embeddings arm (investigated and deliberately deferred, see above — not an oversight),
   no zero-shot NLI arm (always optional, never started).
 - No README.

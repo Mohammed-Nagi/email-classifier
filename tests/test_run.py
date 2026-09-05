@@ -24,6 +24,11 @@ def test_build_predictions_output_contract(config: dict) -> None:
     assert predictions["confidence_score"].between(0, 1).all()
     assert predictions["email_id"].notna().all()
     assert predictions["email_id"].is_unique
+    assert predictions["margin"].between(0, 1).all()
+    assert set(predictions["runner_up_category"]) <= set(config["categories"])
+    assert (predictions["runner_up_category"] != predictions["predicted_category"]).all()
+    assert predictions["needs_review"].dtype == bool
+    assert predictions["top_features"].apply(lambda s: isinstance(s, str)).all()
 
 
 def test_run_is_deterministic(config: dict) -> None:

@@ -56,3 +56,30 @@ class TfidfLRModel(ClassifierModel):
     @property
     def classes_(self) -> np.ndarray:
         return self._pipeline.classes_
+
+    def top_contributing_tokens(self, texts: pd.Series, top_k: int = 5) -> list[list[tuple[str, float]]]:
+        """Top-``top_k`` tokens driving each row's predicted-class score.
+
+        The audit trail PLAN.md §6 asks for. Cheap because the model is
+        linear over a sparse bag-of-tokens: a token's contribution to the
+        predicted class's decision score is exactly
+        ``tfidf_value * coef_[predicted_class]``. Only positive
+        contributions are returned — a token with a negative or zero
+        contribution isn't evidence *for* the predicted class, so it
+        wouldn't belong in "why was this routed here."
+        """
+        vectorizer = self._pipeline.named_steps["tfidf"]
+        classifier = self._pipeline.named_steps["clf"]
+        feature_names = vectorizer.get_feature_names_out()
+
+        tfidf_matrix = vectorizer.transform(texts)
+        predicted_idx = self._pipeline.predict_proba(texts).argmax(axis=1)
+
+        results = []
+        for row in range(tfidf_matrix.shape[0]):
+            contributions = tfidf_matrix[row].toarray().ravel() * classifier.coef_[predicted_idx[row]]
+            top_indices = np.argsort(contributions)[::-1][:top_k]
+            results.append(
+                [(feature_names[i], float(contributions[i])) for i in top_indices if contributions[i] > 0]
+            )
+        return results
