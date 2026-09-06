@@ -3,7 +3,7 @@
 Routes client emails to one of five departments, with a calibrated confidence score and an
 escalation flag for cases a human should check.
 
-## Quick start
+## Setup
 
 ```
 pip install -r requirements.txt
@@ -134,7 +134,7 @@ calibrated model: `CalibratedClassifierCV`'s three internal sub-fits use differe
 so their coefficients can't be averaged into one explanation. Since calibration changes 0 of the
 12 test predictions, this fit explains the same decisions the shipped model makes.
 
-## Abstain-as-`Other`: built, measured, rejected
+## Abstain-as-`Other`
 
 The alternative to a plain fifth label is to train on the four substantive categories only and
 abstain to `Other` when no class clears a confidence threshold. Built and measured on the same
