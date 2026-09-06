@@ -168,6 +168,9 @@ be the most valuable addition overall.
 
 ## Investigated and deferred
 
+**Sentence embeddings with LR.** Deferred, since model choice is already settled once accuracy
+saturates, and a 0.5–1.5GB dependency wasn't worth it for a confirmatory result.
+
 **A hybrid gate** combining abstain-as-`Other` with the existing confidence gate. Not built:
 abstain-as-`Other` was measured and rejected above, and since it does not reduce `Other`'s
 instability, there is no improved abstain signal for a hybrid to add.
