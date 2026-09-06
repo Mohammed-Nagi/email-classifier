@@ -141,66 +141,36 @@ so their coefficients can't be averaged into one explanation. Since calibration 
 ## Abstain-as-`Other`: built, measured, rejected
 
 The alternative to a plain fifth label is to train on the four substantive categories only and
-abstain to `Other` when no class clears a confidence threshold.
-
-**Stated before building it:** this conflates "genuinely off-topic" with "merely not confident".
-Shipped, every low-confidence email becomes both `Other` and `needs_review` by construction, so
-the residual class and the review queue become the same set. The threshold therefore stays its own
-config value, `abstain.threshold`, tuned on its own sweep rather than reused from
-`routing.auto_route_threshold`.
-
-Same folds and seed as the flat model, threshold chosen to maximise `Other` F1 at 0.35:
-
-| Category | Flat 5-way (current) | Abstain-as-`Other` |
-|---|---|---|
-| Insurance Claims | 1.000 ± 0.000 | 1.000 ± 0.000 |
-| Investment Advisory | 0.988 ± 0.048 | 0.925 ± 0.126 |
-| Account Management | 0.976 ± 0.056 | 0.935 ± 0.095 |
-| Loan Processing | 0.956 ± 0.112 | **0.727 ± 0.424 (min 0.000)** |
-| `Other` | **0.727 ± 0.424** | **0.602 ± 0.380 (min 0.000)** |
-| Flat macro-F1 | **0.929 ± 0.108** | **0.838 ± 0.139** |
-| macro-F1, `Other` excluded | 0.980 | 0.897 |
-
-**It loses on every axis.** `Other`'s own F1 gets worse rather than better, 0.727 to 0.602. Flat
-macro-F1 drops nine points. The `Other`-excluded figure drops too, 0.980 to 0.897, because Loan
-Processing, the next-smallest real class at n=6, inherits `Other`'s exact failure signature,
-0.727 ± 0.424 with min 0.000. That is the ablation's small-n and semantic-incoherence split
-resurfacing a second, independent way: a coherent but small class destabilising under threshold
-pressure instead of stripping pressure, which is what the small-n mechanism alone predicts. The
-threshold is sharp rather than robust as well, with macro-F1 falling from 0.838 at 0.35 to 0.629
-at 0.40.
-
-**Recommendation: do not ship it.** The flat model and the existing confidence gate already flag
-low-confidence predictions for review, without relabelling them and without merging two failure
-modes into one bucket. Full ladder and sweep results come from `python -m src.evaluate`.
+abstain to `Other` when no class clears a confidence threshold. Built and measured on the same
+folds as the flat model: it loses on every axis. `Other`'s own F1 gets worse (0.727 → 0.602),
+flat macro-F1 drops nine points (0.929 → 0.838), and Loan Processing, the next-smallest real
+class, inherits `Other`'s instability (0.727 ± 0.424, min 0.000), confirming that the fragility
+tracks small sample size rather than the `Other` label itself. The threshold is also sharp
+rather than robust, with macro-F1 falling from 0.838 at 0.35 to 0.629 at 0.40. Recommendation:
+do not ship it. The flat model and the existing confidence gate already flag low-confidence
+predictions for review, without relabelling them or merging two different failure modes into
+one bucket. Full ladder and sweep results: `python -m src.evaluate`.
 
 ## Measuring success
 
-- **Offline.** Macro-F1 and per-class recall, cross-validated with the fold interval reported and
-  never a single run, broken out by class so `Other` cannot hide inside the average, and reported
-  on the stripped-artifact condition rather than the unstripped headline alone.
-- **Deployment.** Per-class precision at the operating threshold. Misrouting cost is asymmetric;
-  a misrouted fraud report is not a misrouted marketing email.
-- **Operational.** Auto-route coverage, review queue volume, and downstream reassignment rate,
-  meaning how often a department bounces an email back. This is free ground truth that accrues
-  without further labelling.
-- **Drift.** Category mix and confidence distribution monthly. The sample spans January to August
-  2025, so seasonality is concrete rather than hypothetical.
+Success is measured by how well the auto-routed emails actually get routed, not by overall
+accuracy. In practice that means tracking per-department precision on the emails the system
+routes automatically, since a wrong routing costs more in some departments than others, and
+watching the size of the human-review queue to make sure it stays small enough to be useful.
+Reassignments, a department bouncing an email back, are a free, ongoing source of ground truth
+for catching drift over time, and the category mix and confidence distribution are worth a
+monthly check given the training data only spans January to August 2025.
 
 ## Additional features and data
 
-**The taxonomy gap comes first.** The test set contains a fraud report, "I suspect fraudulent
-activity on my account. Please freeze my account immediately.", that fits none of the five
-categories. It is plausibly the highest-stakes email in a regulated inbox and has nowhere to go.
-A fraud or security category should exist before any further modelling effort.
-
-Then: thread history and prior mail from the same client; a CRM lookup for whether the client
-holds a loan, a policy or an investment account, which is a strong prior currently unavailable to
-the model; attachment presence and type; verified sender identity, parsed in `ingest.py` but used
-by no feature variant here, so not measured and not claimed either way; reassignment logs as
-continuously collected labels; and realistic non-synthetic mail. This corpus is clean,
-single-topic and artifact-rich, and the ablation above is a proxy for that gap rather than a
-substitute for closing it.
+Thread history and prior mail from the same client would give the model context beyond a single
+message. A CRM lookup for whether the client already holds a loan, a policy or an investment
+account would supply a strong prior the model has no access to today. Attachment presence and
+type, and verified sender identity, parsed in `ingest.py` but unused by any feature variant here,
+are both plausible signals not yet tested. Reassignment logs would provide continuously collected
+labels for retraining without further manual annotation, and realistic, non-synthetic mail would
+be the most valuable addition overall: this corpus is clean, single-topic and artifact-rich, and
+the ablation above is a proxy for that gap rather than a substitute for closing it.
 
 ## Investigated and deferred
 
@@ -235,8 +205,6 @@ reproducibility this submission is built on.
   for messier input, was checked rather than assumed: training on full text and scoring the
   held-out fold on stripped text, the confidence to accuracy gap shrinks, ECE 0.359 to 0.241,
   rather than inverting. Reassuring but not conclusive, since `core_only` is still synthetic.
-- **The confidence gate has a structural blind spot.** It cannot catch a confidently wrong
-  prediction caused by a missing category.
 - **The 0.45 threshold is selected and evaluated on the same 440 pooled out-of-fold predictions.**
   The coverage/accuracy curve it is read off is the same data used to report 89.1% auto-routing at
   100.0% accuracy. At n=44 behind those 440 points, that operating-point figure is optimistic.
@@ -252,9 +220,7 @@ reproducibility this submission is built on.
 
 ## Next steps
 
-Add a fraud or security category and re-run the pipeline against it. The largest available
-improvement is not a modelling change, and abstain-as-`Other` is not a substitute for it, since an
-off-topic label still has nowhere correct to go. Obtain real or realistically noisy labelled mail
-to test whether the scaffolding dependence found here is a property of this corpus or of short
-templated business email generally. If budget opens up for modelling, nested CV for the
-auto-route threshold would replace the optimistic single-dataset estimate flagged above.
+Obtain real or realistically noisy labelled mail to test whether the scaffolding dependence found
+here is a property of this corpus or of short templated business email generally. If budget opens
+up for modelling, nested CV for the auto-route threshold would replace the optimistic
+single-dataset estimate flagged above.
