@@ -121,6 +121,50 @@ class CalibratedTfidfLRModel:
         return self._model.classes_
 
 
+class AbstainOtherModel:
+    """TF-IDF + LR trained on the four substantive categories only.
+
+    ``Other`` is never a training label here — it's produced at prediction
+    time by :func:`abstain_predict` when no class clears a threshold. The fit
+    itself doesn't depend on that threshold, so the same fit can be scored at
+    several thresholds without refitting.
+    """
+
+    OTHER_LABEL = "Other"
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        self._model = TfidfLRModel(config)
+
+    def fit(self, texts: pd.Series, labels: pd.Series) -> "AbstainOtherModel":
+        kept = labels != self.OTHER_LABEL
+        self._model.fit(texts[kept], labels[kept])
+        return self
+
+    def predict_proba(self, texts: pd.Series) -> np.ndarray:
+        return self._model.predict_proba(texts)
+
+    @property
+    def classes_(self) -> np.ndarray:
+        return self._model.classes_
+
+
+def abstain_predict(model: AbstainOtherModel, texts: pd.Series, threshold: float) -> np.ndarray:
+    """Predicted label: the 4-class argmax, or ``Other`` if its probability
+    doesn't clear ``threshold``.
+
+    A free function rather than a method: the abstain threshold is a routing
+    decision made *about* a fit, not a property of the fit, and keeping it
+    outside the model lets a threshold sweep reuse one fit per fold instead
+    of needing a fresh model per candidate threshold.
+    """
+    proba = model.predict_proba(texts)
+    predicted_idx = proba.argmax(axis=1)
+    confidence = proba[np.arange(len(proba)), predicted_idx]
+    labels = model.classes_[predicted_idx].astype(object)
+    labels[confidence < threshold] = AbstainOtherModel.OTHER_LABEL
+    return labels
+
+
 def predict_with_confidence(model: Any, texts: pd.Series) -> tuple[np.ndarray, np.ndarray]:
     """Predicted category and its probability, for any model in this module."""
     proba = model.predict_proba(texts)

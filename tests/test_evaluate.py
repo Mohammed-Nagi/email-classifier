@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.config import load_config
 from src.evaluate import (
+    build_confusion_matrix,
     count_perfect_single_fold_runs,
     load_labelled_data,
     repeated_stratified_cv,
     run_ablation,
+    sweep_abstain_thresholds,
 )
 from src.features import full_text, subject_only
-from src.model import TfidfLRModel
+from src.model import AbstainOtherModel, TfidfLRModel, abstain_predict
 
 
 @pytest.fixture(scope="module")
@@ -102,3 +106,48 @@ def test_count_perfect_single_fold_runs_is_bounded(config: dict, labelled_df: pd
         n_seeds=5,
     )
     assert 0 <= perfect <= 5
+
+
+def test_run_ablation_accepts_a_different_model_and_predict_fn(
+    config: dict, labelled_df: pd.DataFrame
+) -> None:
+    """The abstain-as-Other comparison depends on this: same harness, same
+    folds, a different model/predict_fn pair."""
+    variants = {"full_text": full_text}
+    summary, per_class = run_ablation(
+        config,
+        labelled_df,
+        variants,
+        model_factory=lambda: AbstainOtherModel(config),
+        predict_fn=partial(abstain_predict, threshold=config["abstain"]["threshold"]),
+    )
+
+    assert set(summary["variant"]) == set(variants)
+    assert set(per_class["category"]) == set(config["categories"])
+    # Abstain can still predict "Other" via the threshold gate, even though
+    # the underlying model never saw it as a training label.
+    assert (per_class["f1_mean"] >= 0).all()
+
+
+def test_build_confusion_matrix_rows_sum_to_class_counts_times_repeats(
+    config: dict, labelled_df: pd.DataFrame
+) -> None:
+    """Pooled out-of-fold: 10 repeats over 44 examples, so each row sums to
+    10x that category's training count."""
+    confusion = build_confusion_matrix(config, labelled_df)
+
+    assert set(confusion.index) == set(config["categories"])
+    assert set(confusion.columns) == set(config["categories"])
+    class_counts = labelled_df["true_category"].value_counts()
+    for category in config["categories"]:
+        assert confusion.loc[category].sum() == class_counts[category] * 10
+
+
+def test_sweep_abstain_thresholds_reports_other_f1_and_macro_f1(
+    config: dict, labelled_df: pd.DataFrame
+) -> None:
+    sweep = sweep_abstain_thresholds(config, labelled_df, thresholds=np.array([0.35, 0.45]))
+
+    assert list(sweep["threshold"]) == [0.35, 0.45]
+    assert {"other_f1_mean", "other_f1_std", "macro_f1_mean", "macro_f1_std"} <= set(sweep.columns)
+    assert sweep["other_f1_mean"].between(0, 1).all()

@@ -33,3 +33,15 @@ routing:
   # 75.0% accurate. An ordinal choice — post-calibration ECE (0.359) is too
   # coarse to treat this as P(correct) in a cost calculation.
   auto_route_threshold: 0.45
+
+abstain:
+  # Threshold on the 4-class (Other excluded from training) model's max
+  # probability, used only by the abstain-as-Other experiment in
+  # `python -m src.evaluate`. Deliberately separate from
+  # routing.auto_route_threshold: that threshold decides whether a human
+  # re-checks a prediction, this one decides which of the 5 buckets a
+  # prediction lands in — conflating them would make the residual class and
+  # the review queue the same set by construction (see README). Chosen by
+  # sweeping Other's F1 (outputs/abstain_threshold_sweep.csv); not used by
+  # `src.run` — the experiment did not beat the shipped flat model.
+  threshold: 0.35

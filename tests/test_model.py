@@ -11,8 +11,10 @@ from src.config import load_config
 from src.features import full_text
 from src.ingest import attach_labels, ingest_directory, load_train_labels, records_to_dataframe
 from src.model import (
+    AbstainOtherModel,
     CalibratedTfidfLRModel,
     TfidfLRModel,
+    abstain_predict,
     explain_predictions,
     predict_with_confidence,
 )
@@ -98,6 +100,27 @@ def test_tied_contributions_break_on_token_string_not_float_order(
         for (token_a, weight_a), (token_b, weight_b) in zip(row, row[1:]):
             if weight_a == weight_b:
                 assert token_a < token_b
+
+
+def test_abstain_model_never_trains_on_other(config: dict, labelled_df: pd.DataFrame) -> None:
+    texts = full_text(labelled_df)
+    model = AbstainOtherModel(config).fit(texts, labelled_df["true_category"])
+
+    assert "Other" not in set(model.classes_)
+    assert len(model.classes_) == 4
+
+
+def test_abstain_predict_maps_low_confidence_to_other(
+    config: dict, labelled_df: pd.DataFrame
+) -> None:
+    texts = full_text(labelled_df)
+    model = AbstainOtherModel(config).fit(texts, labelled_df["true_category"])
+
+    low = abstain_predict(model, texts, threshold=1.01)  # nothing clears this
+    high = abstain_predict(model, texts, threshold=0.0)  # everything clears this
+
+    assert set(low) == {"Other"}
+    assert "Other" not in set(high)
 
 
 def test_explain_predictions_formats_one_string_per_row(
