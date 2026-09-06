@@ -306,43 +306,22 @@ def sweep_abstain_thresholds(
     return pd.DataFrame(rows)
 
 
-def main() -> None:
-    config = load_config()
-    labelled_df = load_labelled_data(config)
-    texts, labels, seed = full_text(labelled_df), labelled_df["true_category"], config["seed"]
+def _print_header(title: str, *, leading_blank: bool = True) -> None:
+    """The ``========== title ==========`` banner, in one place instead of
+    ten copies of ``"=" * 10``."""
+    prefix = "\n" if leading_blank else ""
+    print(f"{prefix}{'=' * 10} {title} {'=' * 10}")
 
-    def factory() -> TfidfLRModel:
-        return TfidfLRModel(config)
 
-    summary, per_class = run_ablation(config, labelled_df)
-
-    print("=" * 10, "Headline CV: full_text", "=" * 10)
-    print(f"  {repeated_stratified_cv(factory, texts, labels, seed=seed).summary()}")
-
-    print("\n" + "=" * 10, "Per-class F1 on full_text (what drives the spread)", "=" * 10)
-    full_text_rows = per_class[per_class["variant"] == "full_text"].sort_values(
-        "f1_mean", ascending=False
-    )
-    for _, row in full_text_rows.iterrows():
+def _print_per_class_rows(rows: pd.DataFrame) -> None:
+    for _, row in rows.iterrows():
         print(
             f"  {row['category']:<22} F1 {row['f1_mean']:.3f} ± {row['f1_std']:.3f} "
             f"(min={row['f1_min']:.3f})"
         )
-    full_text_summary = summary[summary["variant"] == "full_text"].iloc[0]
-    print(
-        f"  {'All 4, Other excluded':<22} macro-F1 {full_text_summary['macro_f1_excl_other']:.3f} "
-        f"± {full_text_summary['macro_f1_excl_other_std']:.3f}"
-    )
 
-    print("\n" + "=" * 10, "Reproducibility of a single 5-fold run", "=" * 10)
-    perfect = count_perfect_single_fold_runs(factory, texts, labels, n_seeds=50)
-    print(f"  {perfect}/50 single stratified 5-fold splits scored macro-F1 == 1.000")
 
-    print("\n" + "=" * 10, "Is the saturation just near-duplicate leakage?", "=" * 10)
-    similarity = mean_nearest_neighbour_similarity(labelled_df["body_text"])
-    print(f"  mean nearest-neighbour cosine similarity within train: {similarity:.3f}")
-
-    print("\n" + "=" * 10, "Ablation: progressive artifact stripping", "=" * 10)
+def _print_ablation_rows(summary: pd.DataFrame) -> None:
     for _, row in summary.iterrows():
         print(
             f"  {row['variant']:<20} macro-F1 {row['macro_f1_mean']:.3f} ± {row['macro_f1_std']:.3f} "
@@ -350,11 +329,55 @@ def main() -> None:
             f"excl. Other {row['macro_f1_excl_other']:.3f}"
         )
 
-    print("\n" + "=" * 10, "Confusion matrix: pooled out-of-fold predictions (rows=true)", "=" * 10)
+
+def _report_headline_and_per_class(
+    factory: ModelFactory,
+    texts: pd.Series,
+    labels: pd.Series,
+    seed: int,
+    summary: pd.DataFrame,
+    per_class: pd.DataFrame,
+) -> None:
+    _print_header("Headline CV: full_text", leading_blank=False)
+    print(f"  {repeated_stratified_cv(factory, texts, labels, seed=seed).summary()}")
+
+    _print_header("Per-class F1 on full_text (what drives the spread)")
+    full_text_rows = per_class[per_class["variant"] == "full_text"].sort_values(
+        "f1_mean", ascending=False
+    )
+    _print_per_class_rows(full_text_rows)
+    full_text_summary = summary[summary["variant"] == "full_text"].iloc[0]
+    print(
+        f"  {'All 4, Other excluded':<22} macro-F1 {full_text_summary['macro_f1_excl_other']:.3f} "
+        f"± {full_text_summary['macro_f1_excl_other_std']:.3f}"
+    )
+
+
+def _report_reproducibility_and_leakage(
+    factory: ModelFactory, texts: pd.Series, labels: pd.Series, labelled_df: pd.DataFrame
+) -> None:
+    _print_header("Reproducibility of a single 5-fold run")
+    perfect = count_perfect_single_fold_runs(factory, texts, labels, n_seeds=50)
+    print(f"  {perfect}/50 single stratified 5-fold splits scored macro-F1 == 1.000")
+
+    _print_header("Is the saturation just near-duplicate leakage?")
+    similarity = mean_nearest_neighbour_similarity(labelled_df["body_text"])
+    print(f"  mean nearest-neighbour cosine similarity within train: {similarity:.3f}")
+
+
+def _report_confusion_matrix(config: dict[str, Any], labelled_df: pd.DataFrame) -> pd.DataFrame:
+    _print_header("Confusion matrix: pooled out-of-fold predictions (rows=true)")
     confusion = build_confusion_matrix(config, labelled_df)
     print(confusion.to_string())
+    return confusion
 
-    print("\n" + "=" * 10, "Abstain-as-Other: threshold sweep on full_text", "=" * 10)
+
+def _report_abstain(
+    config: dict[str, Any], labelled_df: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Threshold sweep, then the same ablation ladder and per-class breakdown
+    as the flat model, run on abstain-as-Other at the config's chosen threshold."""
+    _print_header("Abstain-as-Other: threshold sweep on full_text")
     sweep = sweep_abstain_thresholds(config, labelled_df)
     for _, row in sweep.iterrows():
         print(
@@ -367,34 +390,33 @@ def main() -> None:
     chosen_threshold = float(config["abstain"]["threshold"])
     print(f"  config.yaml abstain.threshold = {chosen_threshold:.2f} (used below)")
 
-    print(
-        "\n" + "=" * 10,
-        f"Abstain-as-Other @ threshold={chosen_threshold:.2f}: same ablation ladder",
-        "=" * 10,
-    )
+    _print_header(f"Abstain-as-Other @ threshold={chosen_threshold:.2f}: same ablation ladder")
     abstain_summary, abstain_per_class = run_ablation(
         config,
         labelled_df,
         model_factory=lambda: AbstainOtherModel(config),
         predict_fn=partial(abstain_predict, threshold=chosen_threshold),
     )
-    for _, row in abstain_summary.iterrows():
-        print(
-            f"  {row['variant']:<20} macro-F1 {row['macro_f1_mean']:.3f} ± {row['macro_f1_std']:.3f} "
-            f"(min={row['macro_f1_min']:.3f}, max={row['macro_f1_max']:.3f})   "
-            f"excl. Other {row['macro_f1_excl_other']:.3f}"
-        )
+    _print_ablation_rows(abstain_summary)
 
-    print("\n" + "=" * 10, "Abstain-as-Other: per-class F1 on full_text", "=" * 10)
+    _print_header("Abstain-as-Other: per-class F1 on full_text")
     abstain_full_text_rows = abstain_per_class[
         abstain_per_class["variant"] == "full_text"
     ].sort_values("f1_mean", ascending=False)
-    for _, row in abstain_full_text_rows.iterrows():
-        print(
-            f"  {row['category']:<22} F1 {row['f1_mean']:.3f} ± {row['f1_std']:.3f} "
-            f"(min={row['f1_min']:.3f})"
-        )
+    _print_per_class_rows(abstain_full_text_rows)
 
+    return sweep, abstain_summary, abstain_per_class
+
+
+def _write_outputs(
+    config: dict[str, Any],
+    summary: pd.DataFrame,
+    per_class: pd.DataFrame,
+    confusion: pd.DataFrame,
+    sweep: pd.DataFrame,
+    abstain_summary: pd.DataFrame,
+    abstain_per_class: pd.DataFrame,
+) -> None:
     output_dir = REPO_ROOT / config["paths"]["output_dir"]
     output_dir.mkdir(parents=True, exist_ok=True)
     summary.to_csv(output_dir / "ablation_results.csv", index=False)
@@ -408,6 +430,26 @@ def main() -> None:
         f"{output_dir / 'confusion_matrix.csv'}, {output_dir / 'abstain_threshold_sweep.csv'}, "
         f"{output_dir / 'abstain_ablation_results.csv'}, {output_dir / 'abstain_ablation_per_class.csv'}"
     )
+
+
+def main() -> None:
+    config = load_config()
+    labelled_df = load_labelled_data(config)
+    texts, labels, seed = full_text(labelled_df), labelled_df["true_category"], config["seed"]
+    factory = lambda: TfidfLRModel(config)
+
+    summary, per_class = run_ablation(config, labelled_df)
+
+    _report_headline_and_per_class(factory, texts, labels, seed, summary, per_class)
+    _report_reproducibility_and_leakage(factory, texts, labels, labelled_df)
+
+    _print_header("Ablation: progressive artifact stripping")
+    _print_ablation_rows(summary)
+
+    confusion = _report_confusion_matrix(config, labelled_df)
+    sweep, abstain_summary, abstain_per_class = _report_abstain(config, labelled_df)
+
+    _write_outputs(config, summary, per_class, confusion, sweep, abstain_summary, abstain_per_class)
 
 
 if __name__ == "__main__":
