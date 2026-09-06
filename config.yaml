@@ -30,8 +30,7 @@ routing:
   # Calibrated-confidence cutoff for auto-route vs. needs_review, read off the
   # coverage/accuracy curve (`python -m src.routing`): at 0.45, 89.1% of
   # predictions auto-route at 100.0% accuracy while the reviewed 10.9% is only
-  # 75.0% accurate. An ordinal choice — post-calibration ECE (0.359) is too
-  # coarse to treat this as P(correct) in a cost calculation.
+  # 75.0% accurate.
   auto_route_threshold: 0.45
 
 abstain:
@@ -39,9 +38,9 @@ abstain:
   # probability, used only by the abstain-as-Other experiment in
   # `python -m src.evaluate`. Deliberately separate from
   # routing.auto_route_threshold: that threshold decides whether a human
-  # re-checks a prediction, this one decides which of the 5 buckets a
-  # prediction lands in — conflating them would make the residual class and
+  # re-checks a prediction; this one decides which of the 5 buckets a
+  # prediction lands in. Conflating them would make the residual class and
   # the review queue the same set by construction (see README). Chosen by
   # sweeping Other's F1 (outputs/abstain_threshold_sweep.csv); not used by
-  # `src.run` — the experiment did not beat the shipped flat model.
+  # `src.run`. The experiment did not beat the shipped flat model.
   threshold: 0.35
