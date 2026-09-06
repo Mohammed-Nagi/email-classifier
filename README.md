@@ -39,7 +39,7 @@ the routing cutoff.
 | Investment Advisory | 0.988 ± 0.048 |
 | Account Management | 0.976 ± 0.056 |
 | Loan Processing | 0.956 ± 0.112 |
-| Other (n=6, residual class) | 0.727 ± 0.424 (min 0.000) |
+| Other (n=6, residual class) | 0.727 ± 0.424 |
 
 `Other` is a residual bucket of HR replies, IT notices and marketing, with 6 examples and no
 topic coherence; some folds score it 0. Its instability drives the headline result's swing, not
