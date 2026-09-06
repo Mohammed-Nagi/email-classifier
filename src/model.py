@@ -97,7 +97,7 @@ class TfidfLRModel:
 class CalibratedTfidfLRModel:
     """TF-IDF + LR with cross-validated sigmoid (Platt) calibration on top.
 
-    ``cv=3``, not 5: this model is evaluated inside a 5-fold outer CV harness
+    ``cv=3``: this model is evaluated inside a 5-fold outer CV harness
     that already holds out ~20% of the 44 examples, leaving as few as 4-5 of
     the smallest class (n=6) in the training fold that ``CalibratedClassifierCV``
     splits again internally. ``cv=5`` needs 5 per class there and raises on some
