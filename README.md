@@ -49,10 +49,9 @@ Mean nearest-neighbour cosine similarity within train is 0.245. The task is keyw
 by construction: the text is short and templated, and category words appear near-verbatim.
 
 Across 50 independent single 5-fold splits, 0 of 50 scored a perfect macro-F1. At n=44 with a
-6-example residual class, one run reported once is not a safe estimate.
-
-Accuracy is therefore not the thing to optimise. There is no headroom on the four saturated
-categories, and any model-against-model comparison is decided by `Other`-driven noise.
+6-example residual class, one run reported once is not a safe estimate. Accuracy is therefore
+not the thing to optimise. There is no headroom on the four saturated categories, and any
+model-against-model comparison is decided by `Other`-driven noise.
 
 ## Ablation: what the model depends on
 
