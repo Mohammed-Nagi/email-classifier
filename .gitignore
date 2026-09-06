@@ -2,3 +2,13 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Build output of `python -m src.evaluate`, regenerated on every run.
+# outputs/predictions.csv (the deliverable, written by `python -m src.run`)
+# is intentionally not listed here and stays tracked.
+outputs/ablation_results.csv
+outputs/ablation_per_class.csv
+outputs/confusion_matrix.csv
+outputs/abstain_threshold_sweep.csv
+outputs/abstain_ablation_results.csv
+outputs/abstain_ablation_per_class.csv

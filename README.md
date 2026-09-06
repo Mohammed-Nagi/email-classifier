@@ -89,8 +89,7 @@ disappear, then becomes load-bearing.
 
 ## Confusion matrix: where wrong predictions actually land
 
-Pooled out-of-fold predictions across the same 5-fold × 10-repeat CV (440 predictions, rows
-true, columns predicted):
+Pooled out-of-fold predictions across the same CV (440 predictions, rows true, columns predicted):
 
 |                     | Account Mgmt | Insurance | Investment | Loan | Other |
 |---|---|---|---|---|---|
@@ -100,31 +99,16 @@ true, columns predicted):
 | **Loan**            | 0   | 0  | 0   | 60 | 0  |
 | **Other**           | 8   | 0  | 3   | 7  | 42 |
 
-**Every confusion in this model is `Other` mail landing in a real department, and nothing else
-is confused at all.** 18 of 60 pooled `Other` predictions (30%) go to a real category — 8 to
-Account Management, 7 to Loan Processing, 3 to Investment Advisory, 0 to Insurance Claims — and
-the four real categories never leak into each other or into `Other`. That reframes the error
-mode: this is not a model that confuses Loan Processing for Account Management, or that
-occasionally drops a client request into the residual bucket. It is a model with no reliable
-handle on off-topic mail, full stop. That's a different problem from ordinary misrouting, and
-it takes a different fix — a taxonomy fix (a category off-topic mail actually belongs to) or a
-better negative-class signal, not a sharper decision boundary between the four departments,
-which this matrix shows is already exact.
+**Every confusion is `Other` landing in a real department — 18 of 60 (30%), split 8/7/3/0 across
+Account Management, Loan Processing, Investment Advisory, Insurance Claims.** The four real
+categories never leak into each other or into `Other`: this isn't a model confusing departments,
+it's one with no reliable handle on off-topic mail — a taxonomy or negative-class-signal problem,
+not a decision-boundary one. The cost is one-directional: non-client mail clutters a queue rather
+than a client's loan or claim reaching the wrong desk.
 
-This also corroborates the `Other` diagnosis from a direction that has nothing to do with fold
-variance. The headline table's case for `Other` being unstable rests on per-fold F1 spread
-across resampled splits; the confusion matrix is a single pooled count, immune to that spread,
-and it independently lands on the same class as the sole source of error. Two measurements
-that could have disagreed — one sensitive to how the data happens to split, one not — agree
-instead.
-
-The operational cost is therefore one-directional — non-client mail (HR replies, IT notices,
-marketing) occasionally clutters a department's queue and has to be bounced back, not a
-client's loan or claim going to the wrong desk. That asymmetry is reassuring for the current
-corpus, but it's also exactly what you'd expect from a keyword-separable task with no
-cross-department vocabulary overlap (mean nearest-neighbour similarity 0.245, above); it says
-nothing about whether real mail, with messier vocabulary, would confuse adjacent departments
-instead.
+This also corroborates the `Other` diagnosis independent of fold variance: the confusion matrix
+is a single pooled count, not sensitive to how folds happen to split, and it independently lands
+on the same class as the sole source of error.
 
 ## Confidence, calibration, routing
 
@@ -172,27 +156,14 @@ explains the same decision the shipped model made.
 
 ## Abstain-as-`Other`: built, measured, rejected
 
-The plain 5-way model treats `Other` as a fifth topic. The alternative: train on the four
-substantive categories only, and assign `Other` whenever no class clears a confidence
-threshold — "abstain" rather than "classify." Semantically closer to what `Other` means
-(residual, not a topic), so it was worth building and measuring rather than assuming.
+Alternative to the plain fifth label: train on the four substantive categories only, and abstain
+to `Other` when no class clears a confidence threshold. **Before building it:** this conflates
+"genuinely off-topic" with "merely not confident" — shipped, every low-confidence email becomes
+both `Other` and `needs_review` by construction, so the residual class and the review queue
+become the same set. The threshold therefore stays its own config value (`abstain.threshold`),
+tuned on its own sweep (`python -m src.evaluate`), not reused from `routing.auto_route_threshold`.
 
-**Before building it:** abstain-as-`Other` conflates two different judgements — "this is
-genuinely an HR/IT/marketing email" and "the model isn't confident about any of the four real
-departments." If shipped, every low-confidence email becomes both `Other` and `needs_review`
-by construction, so the residual class and the review queue become the same set. That loses
-information a reviewer needs: a genuinely off-topic email just needs forwarding elsewhere, no
-model will ever route it correctly; a genuinely in-topic email the model is merely torn on
-(e.g. between Loan Processing and Account Management) can be resolved into one of the four real
-departments. Collapsing both into one bucket means the queue can no longer tell a reviewer
-which kind of case they're looking at. For that reason the abstain threshold is kept as its own
-config value (`abstain.threshold`, `config.yaml`), tuned separately from
-`routing.auto_route_threshold` on its own curve (`outputs/abstain_threshold_sweep.csv`) rather
-than reusing the routing number — even though building it exposed a version of the same
-conflation anyway (below).
-
-**Measured, on the same folds and seed as the flat model, threshold chosen to maximise `Other`
-F1 (0.35):**
+**Same folds/seed as the flat model, threshold chosen to maximise `Other` F1 (0.35):**
 
 | Category | Flat 5-way (current) | Abstain-as-`Other` |
 |---|---|---|
@@ -204,38 +175,17 @@ F1 (0.35):**
 | Flat macro-F1 | **0.929 ± 0.108** | **0.838 ± 0.139** |
 | macro-F1, `Other` excluded | 0.980 | 0.897 |
 
-It loses on every axis asked. `Other`'s own instability gets worse, not better (0.727 → 0.602):
-excluding it from training doesn't give the model a cleaner signal to abstain on — it just
-removes the one class whose examples could teach it what "none of the above" looks like. Flat
-macro-F1 drops nine points. And the `Other`-excluded figure — meant to isolate the four
-saturated categories from `Other`'s noise — drops too (0.980 → 0.897), because Loan Processing
-inherits `Other`'s exact failure signature (F1 0.727 ± 0.424, min 0.000): it is the smallest of
-the four remaining classes (n=6, same as `Other`), so it is what abstain's false positives steal
-from. The conflation flagged above isn't hypothetical — it visibly moved the instability from
-`Other` onto whichever real class was thinnest, rather than resolving it. The threshold is also
-sharp rather than robust: macro-F1 falls from 0.838 at 0.35 to 0.629 at 0.40, a cliff over one
-step of a hyperparameter with no train-set signal to place it by.
+It loses on every axis: `Other`'s F1 gets worse (0.727 → 0.602), flat macro-F1 drops nine points,
+and `Other`-excluded drops too (0.980 → 0.897) because Loan Processing — the next-smallest real
+class (n=6) — inherits `Other`'s exact failure signature (0.727 ± 0.424, min 0.000). That's the
+ablation section's small-n/semantic-incoherence split resurfacing a second, independent way: a
+coherent-but-small class destabilising under threshold pressure instead of stripping pressure,
+exactly what the small-n mechanism alone predicts. The threshold is sharp, not robust, too:
+macro-F1 falls from 0.838 at 0.35 to 0.629 at 0.40.
 
-**This isn't just a reason the strategy loses — it's a third data point for the ablation's
-two-mechanism explanation, arriving by an unrelated route.** The ablation section argues
-`Other`'s fragility has two independent causes: small sample size (fragile once *enough*
-information is stripped) and semantic incoherence (fragile to *any* amount, having no topic to
-fall back on) — and that `Other` is unstable specifically because it has both, while Loan
-Processing, small but topically coherent, has only the first and so survives everything but the
-most extreme stripping. Abstain-as-`Other` applies a completely different kind of pressure —
-a confidence threshold on undegraded full text, not information loss — and Loan Processing
-destabilises anyway, the moment it's put under threshold pressure instead of stripping pressure.
-That's what a small-n-only class should do if the two-mechanism account is right: coherence
-protects it from *topic* fragility, not from *sample-size* fragility, and abstain-as-`Other`
-is a stress test that happens to isolate the second cause on its own. The fragility here is
-mechanism, not `Other`-the-label; a different small real class was exposed to the same pressure
-`Other` normally absorbs, and it broke the same way.
-
-**Recommendation: do not ship it.** The plain 5-way model plus the existing confidence gate
-already does the job abstain-as-`Other` was meant to do — flag low-confidence predictions for
-review — without needing the model to also relabel them, and without merging two different
-failure modes into one bucket. Full ablation-ladder results:
-`outputs/abstain_ablation_results.csv`, `outputs/abstain_ablation_per_class.csv`.
+**Recommendation: do not ship it.** The flat model plus the existing confidence gate already
+flags low-confidence predictions for review, without relabelling them or merging two failure
+modes into one bucket. Full ablation-ladder and sweep results: `python -m src.evaluate`.
 
 ## Measuring success
 
